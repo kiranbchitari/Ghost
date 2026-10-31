@@ -779,7 +779,10 @@ const createStyles = ({ colors, glow, chat }: AppTheme) => {
       alignItems: 'center',
       gap: 3,
     },
-    metaSpacer: { fontSize: 11, color: 'transparent' },
+    // Not 'transparent': in nested Text on Android a fully transparent colour
+    // counts as unset and inherits the message's colour, so the stand-in time
+    // showed. Alpha 1/255 is invisible but still a colour of its own.
+    metaSpacer: { fontSize: 11, color: '#00000001' },
     // On a photo: white on a soft dark pill.
     metaOverlay: {
       position: 'absolute',
