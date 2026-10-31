@@ -158,6 +158,10 @@ Migration: `supabase/migrations/20261031190000_message_edits.sql`.
 All four degrade gracefully: until their migrations are applied, the app works as before and the
 feature simply doesn't show (reacting or editing then reports the server's error).
 
+To apply all three from the dashboard instead of the CLI, paste
+`supabase/sql-editor/2026-10-31_reactions_edits_typing.sql` into **SQL Editor** and run it. It makes
+the same changes as the three migrations, in one transaction, and is safe to run more than once.
+
 ### End-to-end encryption
 
 Messages are encrypted on the device with NaCl `box` (X25519 + XSalsa20-Poly1305, via `tweetnacl`).
