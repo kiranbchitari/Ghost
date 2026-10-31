@@ -37,15 +37,15 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Ghost needs your photos so you can share them in encrypted chats.",
-          "cameraPermission": "Ghost needs the camera so you can take photos to share in encrypted chats. Photos are never saved to your gallery.",
+          "photosPermission": "Choose photos to share.",
+          "cameraPermission": "Take photos to share. They are never saved to your gallery.",
           "microphonePermission": false
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Ghost needs the camera so you can take photos to share in encrypted chats. Photos are never saved to your gallery.",
+          "cameraPermission": "Take photos to share. They are never saved to your gallery.",
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": false
