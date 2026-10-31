@@ -95,15 +95,26 @@ export async function listConversations() {
   return (data ?? []) as ConversationSummary[];
 }
 
-export async function listMessages(conversationId: string, limit = 100) {
-  const { data, error } = await supabase
+export const PAGE_SIZE = 50;
+
+// Newest first. `before` (a created_at) pages back through older messages.
+export async function listMessages(conversationId: string, options: { before?: string; limit?: number } = {}) {
+  let query = supabase
     .from('messages')
     .select('*')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(options.limit ?? PAGE_SIZE);
+  if (options.before) query = query.lt('created_at', options.before);
+  const { data, error } = await query;
   if (error) throw new Error(error.message);
   return data as Message[];
+}
+
+export async function getMessage(messageId: string) {
+  const { data, error } = await supabase.from('messages').select('*').eq('id', messageId).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data as Message | null;
 }
 
 export async function markMessagesDelivered() {
@@ -123,10 +134,13 @@ export async function sendMessage(
   { ciphertext, nonce }: Encrypted,
   image?: { attachmentPath: string; viewOnce: boolean },
   replyTo?: string,
+  // Chosen on the phone so a retried send can't create a second copy.
+  id?: string,
 ) {
   const { data, error } = await supabase
     .from('messages')
     .insert({
+      ...(id && { id }),
       conversation_id: conversationId,
       ciphertext,
       nonce,
@@ -135,7 +149,14 @@ export async function sendMessage(
     })
     .select()
     .single();
-  if (error) throw new Error(error.message);
+  if (error) {
+    // Already stored by an earlier attempt whose reply never arrived.
+    if (error.code === '23505' && id) {
+      const existing = await getMessage(id);
+      if (existing) return existing;
+    }
+    throw new Error(error.message);
+  }
   return data as Message;
 }
 

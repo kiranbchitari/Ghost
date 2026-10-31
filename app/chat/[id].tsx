@@ -4,13 +4,25 @@ import * as Clipboard from 'expo-clipboard';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useHeaderHeight } from 'expo-router/react-navigation';
-import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
-import { BackHandler, FlatList, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
+import {
+  ActivityIndicator,
+  BackHandler,
+  FlatList,
+  Keyboard,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native';
 import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import Animated, { useAnimatedReaction, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { showAlert, showError } from '@/components/dialog';
+import { showActionSheet, showAlert, showError } from '@/components/dialog';
 import { BurnSettingsSheet } from '@/features/burn-mode/burn-settings-sheet';
 import { describeBurn, formatBurn } from '@/features/burn-mode/timer';
 import { ImageViewer } from '@/features/burn-photo/image-viewer';
@@ -19,7 +31,7 @@ import { pickImage, type PickedImage } from '@/features/burn-photo/pick-image';
 import { AttachmentPanel } from '@/features/messaging/attachment-panel';
 import { EmojiPanel } from '@/features/messaging/emoji-panel';
 import { MessageBubble } from '@/features/messaging/message-bubble';
-import { describeForQuote, quoteFor } from '@/features/messaging/reply';
+import { describeForQuote, quoteFor, type Quote } from '@/features/messaging/reply';
 import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { heroFor } from '@/features/profile/heroes';
 import { useMessages, type DisplayMessage } from '@/features/messaging/use-messages';
@@ -38,8 +50,14 @@ export default function ChatScreen() {
     peer,
     sharedKey,
     isReady,
+    isConnected,
+    hasOlder,
+    isLoadingOlder,
+    loadOlder,
     error,
     send,
+    retry,
+    discard,
     sendImage,
     deleteMessage,
     markViewed,
@@ -114,14 +132,61 @@ export default function ChatScreen() {
   const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
   // Where emoji go; kept while the input is blurred behind the emoji panel.
   const selection = useRef({ start: 0, end: 0 });
-  const listRef = useRef<FlatList<DisplayMessage>>(null);
+  const listRef = useRef<FlatList<Row>>(null);
   const oldestFirst = useMemo(() => [...messages].reverse(), [messages]);
+  // Messages with a day heading ("Today", "Yesterday", …) before each new day.
+  const rows = useMemo(() => withDayHeadings(oldestFirst), [oldestFirst]);
+  // Quotes per message, rebuilt only when messages change, so rows stay memoised.
+  const quotes = useMemo(() => {
+    const map = new Map<string, Quote | null>();
+    for (const m of messages) map.set(m.id, quoteFor(m, byId, myId, friendName, mask));
+    return map;
+  }, [messages, byId, myId, friendName, mask]);
 
   const headerHeight = useHeaderHeight();
 
-  function scrollToLatest() {
-    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+  // Like WhatsApp, the chat only follows new messages while you're at the
+  // bottom; scrolled up, a button offers to jump down (with a count).
+  const isNearBottom = useRef(true);
+  const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
+  const [newBelow, setNewBelow] = useState(0);
+  const newestId = useRef<string | undefined>(undefined);
+
+  function scrollToLatest(animated = false) {
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated }));
   }
+
+  function followIfAtBottom() {
+    if (isNearBottom.current) scrollToLatest();
+  }
+
+  function onScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const near = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 120;
+    isNearBottom.current = near;
+    if (near === isAwayFromBottom) setIsAwayFromBottom(!near);
+    if (near && newBelow) setNewBelow(0);
+  }
+
+  // Count the friend's messages that arrive while scrolled up.
+  useEffect(() => {
+    const newest = messages[0];
+    if (!newest || newest.id === newestId.current) return;
+    const isFirst = newestId.current === undefined;
+    newestId.current = newest.id;
+    if (!isFirst && !isNearBottom.current && newest.sender_id !== myId) setNewBelow((n) => n + 1);
+  }, [messages, myId]);
+
+  // "Connecting…" only if it takes a moment, not on every chat opening.
+  const [showConnecting, setShowConnecting] = useState(false);
+  useEffect(() => {
+    if (isConnected) {
+      setShowConnecting(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowConnecting(true), 1500);
+    return () => clearTimeout(timer);
+  }, [isConnected]);
 
   // Remember the keyboard's height for the emoji panel, and once the keyboard
   // is up (it now covers the panel), take the panel away.
@@ -167,17 +232,31 @@ export default function ChatScreen() {
     return () => clearTimeout(timer);
   }, [flashId]);
 
-  function select(message: DisplayMessage) {
+  const select = useCallback((message: DisplayMessage) => {
     Haptics.selectionAsync().catch(() => {});
     setIsAttachOpen(false);
     setSelectedId((current) => (current === message.id ? null : message.id));
-  }
+  }, []);
 
-  function startReply(message: DisplayMessage) {
+  const startReply = useCallback((message: DisplayMessage) => {
     setSelectedId(null);
     setReplyToId(message.id);
     inputRef.current?.focus();
-  }
+  }, []);
+
+  const openImage = useCallback((message: DisplayMessage) => setViewingId(message.id), []);
+
+  const offerRetry = useCallback(
+    (message: DisplayMessage) =>
+      showActionSheet(
+        [
+          { text: 'Try again', icon: 'refresh', onPress: () => retry(message.id) },
+          { text: 'Delete', icon: 'trash-outline', style: 'destructive', onPress: () => discard(message.id) },
+        ],
+        "This message wasn't sent.",
+      ),
+    [retry, discard],
+  );
 
   async function copySelected() {
     if (!selected?.text) return;
@@ -206,12 +285,15 @@ export default function ChatScreen() {
   }
 
   // Scroll to a quoted message and tint it for a moment.
-  function jumpTo(messageId: string) {
-    const index = oldestFirst.findIndex((m) => m.id === messageId);
-    if (index < 0) return;
-    listRef.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
-    setFlashId(messageId);
-  }
+  const jumpTo = useCallback(
+    (messageId: string) => {
+      const index = rows.findIndex((row) => row.type === 'message' && row.message.id === messageId);
+      if (index < 0) return;
+      listRef.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
+      setFlashId(messageId);
+    },
+    [rows],
+  );
 
   function openEmoji() {
     setIsAttachOpen(false);
@@ -269,19 +351,21 @@ export default function ChatScreen() {
     const body = draft.trim();
     if (!body) return;
 
-    // Clear straight away so anything typed while this sends starts a new
-    // message; put the text and reply back if sending fails.
+    // The message shows at once (🕓) and the composer clears; if sending fails
+    // it stays in the chat as "Not sent", to retry or delete.
     const replyingTo = replyTo && !replyTo.isDeleted && !replyTo.isExpired ? replyTo.id : undefined;
+    try {
+      send(body, replyingTo);
+    } catch (e) {
+      showError('Message not sent', e);
+      return;
+    }
     setDraft('');
     setReplyToId(null);
     setComposerKey((k) => k + 1);
-    try {
-      await send(body, replyingTo);
-    } catch (e) {
-      setDraft((current) => (current ? `${body} ${current}` : body));
-      if (replyingTo) setReplyToId(replyingTo);
-      showError('Message not sent', e);
-    }
+    // Sending always brings you back down to your message.
+    isNearBottom.current = true;
+    scrollToLatest(true);
   }
 
   return (
@@ -381,37 +465,54 @@ export default function ChatScreen() {
         // blur over its whole body. Render oldest-first and pin to the bottom.
         <FlatList
           ref={listRef}
-          data={oldestFirst}
-          keyExtractor={(m) => m.id}
+          data={rows}
+          keyExtractor={(row) => row.key}
           // Pad for the translucent header ourselves: with "automatic", iOS
           // resets the offset after our initial scroll to the latest message.
           contentContainerStyle={[styles.list, { paddingTop: headerHeight + 8 }]}
           contentInsetAdjustmentBehavior="never"
           keyboardDismissMode="interactive"
-          onContentSizeChange={scrollToLatest}
-          onLayout={scrollToLatest}
+          onScroll={onScroll}
+          scrollEventThrottle={32}
+          onContentSizeChange={followIfAtBottom}
+          onLayout={followIfAtBottom}
+          // Older pages load near the top without the view jumping.
+          onStartReached={hasOlder ? loadOlder : undefined}
+          onStartReachedThreshold={0.5}
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          ListHeaderComponent={isLoadingOlder ? <ActivityIndicator style={styles.loadingOlder} /> : undefined}
+          initialNumToRender={30}
+          windowSize={11}
           // Rows vary in height, so a far jump can miss: land near it, then retry.
           onScrollToIndexFailed={({ index, averageItemLength }) => {
             listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
             setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.5 }), 100);
           }}
-          extraData={[selectedId, flashId]}
-          renderItem={({ item }) => (
-            <MessageBubble
-              message={item}
-              isMine={item.sender_id === myId}
-              sharedKey={sharedKey}
-              quote={quoteFor(item, byId, myId, friendName, mask)}
-              isSelected={item.id === selectedId || item.id === flashId}
-              isSelecting={selectedId !== null}
-              onOpenImage={(message) => setViewingId(message.id)}
-              onSelect={select}
-              onReply={startReply}
-              onQuotePress={jumpTo}
-            />
-          )}
+          extraData={[selectedId, flashId, quotes]}
+          renderItem={({ item }) =>
+            item.type === 'day' ? (
+              <View style={styles.dayRow}>
+                <Text style={styles.dayLabel}>{item.label}</Text>
+              </View>
+            ) : (
+              <MessageBubble
+                message={item.message}
+                isMine={item.message.sender_id === myId}
+                sharedKey={sharedKey}
+                quote={quotes.get(item.message.id) ?? null}
+                isSelected={item.message.id === selectedId || item.message.id === flashId}
+                isSelecting={selectedId !== null}
+                onOpenImage={openImage}
+                onSelect={select}
+                onReply={startReply}
+                onQuotePress={jumpTo}
+                onFailedPress={offerRetry}
+              />
+            )
+          }
         />
       )}
+
 
       {/* Tapping anywhere else closes the attach card. */}
       {isAttachOpen && (
@@ -422,6 +523,7 @@ export default function ChatScreen() {
       <Text style={[styles.notice, error && styles.error]}>
         {error ??
           toast ??
+          (isReady && showConnecting ? 'Connecting…' : null) ??
           (isReady
             ? `🔒 End-to-end encrypted${burnSummary ? ` · 🔥 ${burnSummary}` : ''}`
             : 'Setting up encryption…')}
@@ -429,6 +531,24 @@ export default function ChatScreen() {
 
       <View>
         {isAttachOpen && <AttachmentPanel onPick={pick} />}
+        {/* Rides with the composer (and the keyboard), above the notice line. */}
+        {isAwayFromBottom && (
+          <Pressable
+            style={styles.jumpDown}
+            onPress={() => {
+              setNewBelow(0);
+              scrollToLatest(true);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={newBelow ? `${newBelow} new messages. Scroll to latest` : 'Scroll to latest'}>
+            <Ionicons name="chevron-down" size={22} color={theme.colors.text} />
+            {newBelow > 0 && (
+              <View style={styles.jumpBadge}>
+                <Text style={styles.jumpBadgeText}>{newBelow > 99 ? '99+' : newBelow}</Text>
+              </View>
+            )}
+          </Pressable>
+        )}
         <Animated.View style={[styles.composer, composerPadding]}>
           {replyTo && (
             <View style={styles.replyBar}>
@@ -553,6 +673,50 @@ const createStyles = ({ colors }: AppTheme) =>
     emptyText: { color: colors.textMuted },
     dismissLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
     headerActions: { flexDirection: 'row', alignItems: 'center' },
+    loadingOlder: { marginVertical: 12 },
+    dayRow: { alignItems: 'center', marginVertical: 10 },
+    dayLabel: {
+      color: colors.textMuted,
+      fontSize: 12,
+      fontWeight: '600',
+      paddingHorizontal: 12,
+      paddingVertical: 4,
+      borderRadius: 10,
+      overflow: 'hidden',
+      backgroundColor: colors.surface,
+    },
+    jumpDown: {
+      position: 'absolute',
+      right: 14,
+      bottom: '100%',
+      marginBottom: 44,
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      shadowColor: '#000',
+      shadowOpacity: 0.2,
+      shadowRadius: 6,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 4,
+    },
+    jumpBadge: {
+      position: 'absolute',
+      top: -6,
+      right: -4,
+      minWidth: 20,
+      height: 20,
+      borderRadius: 10,
+      paddingHorizontal: 5,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.accent,
+    },
+    jumpBadgeText: { color: colors.onAccent, fontSize: 11, fontWeight: '700' },
     headerAction: { paddingHorizontal: 10, paddingVertical: 4 },
     composer: {
       gap: 6,
@@ -615,3 +779,33 @@ const createStyles = ({ colors }: AppTheme) =>
     // In the screen's bottom padding, which is the emoji panel's height while it is open.
     emojiSlot: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   });
+
+type Row = { type: 'day'; key: string; label: string } | { type: 'message'; key: string; message: DisplayMessage };
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+// "Today", "Yesterday", a weekday within the last week, else the date.
+function dayLabel(iso: string) {
+  const date = new Date(iso);
+  const days = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return date.toLocaleDateString([], { weekday: 'long' });
+  return date.toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function withDayHeadings(messages: DisplayMessage[]): Row[] {
+  const rows: Row[] = [];
+  let lastDay: number | null = null;
+  for (const message of messages) {
+    const day = startOfDay(new Date(message.created_at));
+    if (day !== lastDay) {
+      rows.push({ type: 'day', key: `day-${day}`, label: dayLabel(message.created_at) });
+      lastDay = day;
+    }
+    rows.push({ type: 'message', key: message.id, message });
+  }
+  return rows;
+}

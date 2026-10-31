@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 
 import { BURN_ANIMATION_MS, burnsAt } from '@/features/burn-mode/timer';
 import {
@@ -10,6 +11,7 @@ import {
   listMessages,
   markConversationRead,
   markMessageViewed,
+  PAGE_SIZE,
   sendMessage,
   setBurnTimer,
   type BurnMode,
@@ -25,7 +27,7 @@ import {
 import { openContent, type MessageContent } from '@/features/messaging/crypto';
 import { useAppState } from '@/hooks/use-app-state';
 import { useSession } from '@/hooks/use-session';
-import { encrypt } from '@/services/encryption/box';
+import { encrypt, randomUuid } from '@/services/encryption/box';
 import { getSharedKey } from '@/services/encryption/device-keys';
 import { supabase } from '@/services/supabase/client';
 
@@ -36,7 +38,19 @@ export type DisplayMessage = Message &
     isExpired: boolean;
     // Seconds until it burns, once its timer has started.
     burnIn: number | null;
+    // Only on your own messages that the server hasn't confirmed yet.
+    sendState?: 'sending' | 'failed';
   };
+
+// A text message shown straight away, before the server has it. Its id is
+// the one it will be stored under, so retrying can't make a second copy.
+type PendingMessage = {
+  id: string;
+  text: string;
+  replyTo?: string;
+  created_at: string;
+  state: 'sending' | 'failed';
+};
 
 // Newest first, de-duplicated by id: a sent message can arrive both from the
 // insert response and from the realtime subscription.
@@ -56,6 +70,11 @@ export function useMessages(conversationId: string) {
   const [settings, setSettings] = useState<ConversationSettings | null>(null);
   const [expiredIds, setExpiredIds] = useState<ReadonlySet<string>>(new Set());
   const [now, setNow] = useState(Date.now());
+  const [pending, setPending] = useState<PendingMessage[]>([]);
+  // Live updates are flowing (false while connecting or offline).
+  const [isConnected, setIsConnected] = useState(false);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
@@ -115,21 +134,37 @@ export function useMessages(conversationId: string) {
     };
   }, [conversationId, userId]);
 
-  useEffect(() => {
-    let cancelled = false;
+  // Fetches the latest page and merges it in: on opening, on every
+  // (re)connection and when the app returns to the foreground, so nothing
+  // sent or changed while offline is missed.
+  const resync = useCallback(
+    (isFirstLoad = false) =>
+      listMessages(conversationId)
+        .then((loaded) => {
+          const at = Date.now();
+          const live = loaded.filter((m) => {
+            const due = burnsAt(m);
+            return due === null || due > at;
+          });
+          if (live.length < loaded.length) sweepServer();
+          if (isFirstLoad) setHasOlder(loaded.length === PAGE_SIZE);
+          setMessages((prev) => merge(live, prev));
+        })
+        .catch((e: Error) => {
+          if (isFirstLoad) setError(e.message);
+        }),
+    [conversationId, sweepServer],
+  );
 
-    listMessages(conversationId)
-      .then((loaded) => {
-        if (cancelled) return;
-        const at = Date.now();
-        const live = loaded.filter((m) => {
-          const due = burnsAt(m);
-          return due === null || due > at;
-        });
-        if (live.length < loaded.length) sweepServer();
-        setMessages((prev) => merge(live, prev));
-      })
-      .catch((e: Error) => !cancelled && setError(e.message));
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') resync();
+    });
+    return () => subscription.remove();
+  }, [resync]);
+
+  useEffect(() => {
+    resync(true);
 
     const filter = `conversation_id=eq.${conversationId}`;
     const insert = (payload: { new: object }) =>
@@ -151,13 +186,32 @@ export function useMessages(conversationId: string) {
       .channel(`messages:${conversationId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter }, insert)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter }, applyUpdate)
-      .subscribe();
+      .subscribe((status) => {
+        setIsConnected(status === 'SUBSCRIBED');
+        // Back after a drop: pick up whatever arrived in the gap.
+        if (status === 'SUBSCRIBED') resync();
+      });
 
     return () => {
-      cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [conversationId, sweepServer]);
+  }, [conversationId, resync]);
+
+  // Older messages, a page at a time, as the person scrolls up.
+  const loadOlder = useCallback(async () => {
+    const oldest = messagesRef.current.at(-1);
+    if (!hasOlder || isLoadingOlder || !oldest) return;
+    setIsLoadingOlder(true);
+    try {
+      const older = await listMessages(conversationId, { before: oldest.created_at });
+      setHasOlder(older.length === PAGE_SIZE);
+      setMessages((prev) => merge(older, prev));
+    } catch (e) {
+      console.warn('Loading older messages failed:', (e as Error).message);
+    } finally {
+      setIsLoadingOlder(false);
+    }
+  }, [conversationId, hasOlder, isLoadingOlder]);
 
   // The conversation's burn timer and erasures, live from either member.
   useEffect(() => {
@@ -244,9 +298,41 @@ export function useMessages(conversationId: string) {
       .catch((e: Error) => console.warn('Marking conversation read failed:', e.message));
   }, [conversationId, userId, hasUnread, appState]);
 
-  const displayMessages = useMemo<DisplayMessage[]>(
-    () =>
-      messages.map((m) => {
+  const displayMessages = useMemo<DisplayMessage[]>(() => {
+    const stored = new Set(messages.map((m) => m.id));
+    // Newest first, like `messages`; pending ones are the newest of all.
+    const unsent: DisplayMessage[] = pending
+      .filter((p) => !stored.has(p.id))
+      .reverse()
+      .map((p) => ({
+        id: p.id,
+        conversation_id: conversationId,
+        sender_id: userId ?? '',
+        body: null,
+        ciphertext: null,
+        nonce: null,
+        created_at: p.created_at,
+        delivered_at: null,
+        read_at: null,
+        kind: 'text',
+        attachment_path: null,
+        view_once: false,
+        viewed_at: null,
+        deleted_at: null,
+        burn_seconds: null,
+        burn_mode: null,
+        reply_to: p.replyTo ?? null,
+        text: p.text,
+        image: null,
+        isEncrypted: true,
+        isDeleted: false,
+        isExpired: false,
+        burnIn: null,
+        sendState: p.state,
+      }));
+    return [
+      ...unsent,
+      ...messages.map((m) => {
         const due = burnsAt(m);
         return {
           ...m,
@@ -255,17 +341,68 @@ export function useMessages(conversationId: string) {
           burnIn: due === null ? null : Math.max(0, Math.ceil((due - now) / 1000)),
         };
       }),
-    [messages, sharedKey, expiredIds, now],
-  );
+    ];
+  }, [messages, pending, sharedKey, expiredIds, now, conversationId, userId]);
 
-  const send = useCallback(
-    async (text: string, replyTo?: string) => {
-      if (!sharedKey) throw new Error('Encryption is not ready for this chat yet.');
-      const message = await sendMessage(conversationId, encrypt(text, sharedKey), undefined, replyTo);
-      setMessages((prev) => merge([message], prev));
+  const deliver = useCallback(
+    async (message: PendingMessage) => {
+      if (!sharedKey) return;
+      setPending((prev) => prev.map((p) => (p.id === message.id ? { ...p, state: 'sending' } : p)));
+      try {
+        const stored = await sendMessage(
+          conversationId,
+          encrypt(message.text, sharedKey),
+          undefined,
+          message.replyTo,
+          message.id,
+        );
+        setMessages((prev) => merge([stored], prev));
+        setPending((prev) => prev.filter((p) => p.id !== message.id));
+      } catch (e) {
+        console.warn('Sending failed:', (e as Error).message);
+        setPending((prev) => prev.map((p) => (p.id === message.id ? { ...p, state: 'failed' } : p)));
+      }
     },
     [conversationId, sharedKey],
   );
+
+  // Shows the message at once (🕓), then stores it. A failure leaves it in
+  // the chat marked as not sent, to retry or discard.
+  const send = useCallback(
+    (text: string, replyTo?: string) => {
+      if (!sharedKey) throw new Error('Encryption is not ready for this chat yet.');
+      const message: PendingMessage = {
+        id: randomUuid(),
+        text,
+        replyTo,
+        created_at: new Date().toISOString(),
+        state: 'sending',
+      };
+      setPending((prev) => [...prev, message]);
+      deliver(message);
+    },
+    [deliver, sharedKey],
+  );
+
+  const retry = useCallback(
+    (id: string) => {
+      const message = pending.find((p) => p.id === id);
+      if (message) deliver(message);
+    },
+    [deliver, pending],
+  );
+
+  const discard = useCallback((id: string) => {
+    setPending((prev) => prev.filter((p) => p.id !== id));
+  }, []);
+
+  // Failed sends are retried by themselves once the connection is back.
+  useEffect(() => {
+    if (!isConnected) return;
+    pending.filter((p) => p.state === 'failed').forEach(deliver);
+    // Only when the connection comes back, not on every pending change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected]);
 
   const sendImage = useCallback(
     async (image: { base64: string; width: number; height: number }, viewOnce: boolean) => {
@@ -334,8 +471,14 @@ export function useMessages(conversationId: string) {
     peer,
     sharedKey,
     isReady: sharedKey !== null,
+    isConnected,
+    hasOlder,
+    isLoadingOlder,
+    loadOlder,
     error,
     send,
+    retry,
+    discard,
     sendImage,
     deleteMessage,
     markViewed,

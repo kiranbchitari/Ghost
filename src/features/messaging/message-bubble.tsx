@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, { interpolate, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -28,6 +28,8 @@ type Props = {
   onSelect: (message: DisplayMessage) => void;
   onReply: (message: DisplayMessage) => void;
   onQuotePress: (messageId: string) => void;
+  // A message of yours that failed to send was tapped.
+  onFailedPress: (message: DisplayMessage) => void;
 };
 
 const IMAGE_WIDTH = 230;
@@ -35,7 +37,9 @@ const IMAGE_MAX_HEIGHT = 300;
 // How far to swipe right before letting go replies.
 const REPLY_DISTANCE = 64;
 
-export function MessageBubble({
+// Memoised: in a long chat only rows whose props change re-render, so pass
+// stable callbacks.
+export const MessageBubble = memo(function MessageBubble({
   message,
   isMine,
   sharedKey,
@@ -46,6 +50,7 @@ export function MessageBubble({
   onSelect,
   onReply,
   onQuotePress,
+  onFailedPress,
 }: Props) {
   const styles = useThemedStyles(createStyles);
 
@@ -67,7 +72,8 @@ export function MessageBubble({
   // Expired by a timer or an erase: after burning, nothing is left behind.
   if (!burning && !aboutToBurn && message.isExpired) return null;
 
-  const isLive = !burning && !aboutToBurn && !message.isDeleted;
+  // Unsent messages have nothing on the server yet to reply to.
+  const isLive = !burning && !aboutToBurn && !message.isDeleted && !message.sendState;
 
   return (
     <SwipeToReply enabled={isLive} onReply={() => onReply(message)} styles={styles}>
@@ -91,12 +97,13 @@ export function MessageBubble({
             onOpenImage={onOpenImage}
             onSelect={onSelect}
             onQuotePress={onQuotePress}
+            onFailedPress={onFailedPress}
           />
         )}
       </View>
     </SwipeToReply>
   );
-}
+});
 
 // WhatsApp's swipe to reply: drag a message right until the reply arrow fills
 // in (with a tick of haptics), then let go. Vertical drags still scroll.
@@ -178,6 +185,7 @@ type BubbleProps = {
   onOpenImage?: (message: DisplayMessage) => void;
   onSelect?: (message: DisplayMessage) => void;
   onQuotePress?: (messageId: string) => void;
+  onFailedPress?: (message: DisplayMessage) => void;
   fill?: boolean;
 };
 
@@ -191,6 +199,7 @@ function Bubble({
   onOpenImage,
   onSelect,
   onQuotePress,
+  onFailedPress,
   fill,
 }: BubbleProps) {
   const { theme } = useAppTheme();
@@ -239,14 +248,17 @@ function Bubble({
     content = <Text style={textStyle}>{isMasked ? maskText(message.text) : message.text}</Text>;
   }
 
-  const canSelect = !message.isDeleted && !!onSelect;
-  const onPress = isSelecting
-    ? canSelect
-      ? () => onSelect(message)
-      : undefined
-    : canOpen && onOpenImage
-      ? () => onOpenImage(message)
-      : undefined;
+  const canSelect = !message.isDeleted && !message.sendState && !!onSelect;
+  const onPress =
+    message.sendState === 'failed' && onFailedPress
+      ? () => onFailedPress(message)
+      : isSelecting
+        ? canSelect
+          ? () => onSelect(message)
+          : undefined
+        : canOpen && onOpenImage
+          ? () => onOpenImage(message)
+          : undefined;
 
   return (
     <Pressable
@@ -283,7 +295,17 @@ function Bubble({
       <View style={styles.metaRow}>
         <Text style={[styles.meta, metaStyle]}>{meta}</Text>
         {!message.isDeleted && <BurnCountdown message={message} styles={styles} isMine={isMine} />}
-        {isMine && message.isEncrypted && !message.isDeleted && <Ticks message={message} styles={styles} />}
+        {message.sendState === 'sending' && (
+          <Ionicons name="time-outline" size={12} style={[styles.meta, metaStyle]} accessibilityLabel="Sending" />
+        )}
+        {message.sendState === 'failed' && (
+          <Text style={[styles.meta, styles.failed]} accessibilityLabel="Not sent. Tap to retry.">
+            ⚠ Not sent · Tap to retry
+          </Text>
+        )}
+        {isMine && message.isEncrypted && !message.isDeleted && !message.sendState && (
+          <Ticks message={message} styles={styles} />
+        )}
       </View>
     </Pressable>
   );
@@ -413,6 +435,7 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     textTheirs: { color: colors.bubbleTheirsText, fontSize: 16 },
     placeholder: { fontSize: 15, fontStyle: 'italic' },
     burnLive: { color: '#ff7a1a', fontWeight: '700' },
+    failed: { color: colors.danger, fontWeight: '700' },
     metaRow: {
       flexDirection: 'row',
       alignItems: 'center',

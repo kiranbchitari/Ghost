@@ -55,6 +55,15 @@ export function decryptBytes(data: Uint8Array, nonce: string, sharedKey: Uint8Ar
 }
 
 // 128-bit random hex id, e.g. for attachment file names.
+// Random version 4 UUID (Hermes has no crypto.randomUUID).
+export function randomUuid() {
+  const b = nacl.randomBytes(16);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function randomId() {
   return Array.from(nacl.randomBytes(16), (b) => b.toString(16).padStart(2, '0')).join('');
 }

@@ -1,5 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 
 import { listConversations, type ConversationSummary } from '@/features/messaging/api';
 import { openContent } from '@/features/messaging/crypto';
@@ -67,9 +68,16 @@ export function useConversations() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
         reload();
       })
-      .subscribe();
+      // Also after a dropped connection comes back: catch up on the gap.
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') reload();
+      });
+    const foreground = AppState.addEventListener('change', (state) => {
+      if (state === 'active') reload();
+    });
     return () => {
       supabase.removeChannel(channel);
+      foreground.remove();
     };
   }, [reload]);
 
