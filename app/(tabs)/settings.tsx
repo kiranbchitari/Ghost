@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 import { showAlert, showError } from '@/components/dialog';
+import { DisguiseSettings } from '@/features/disguise/disguise-settings';
 import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { HeroPicker } from '@/features/profile/hero-picker';
 import { useMyProfile } from '@/features/profile/use-my-profile';
@@ -44,7 +46,11 @@ export default function SettingsScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <KeyboardAwareScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
+      bottomOffset={24}>
       <View style={styles.identity}>
         <Pressable
           onPress={() => setIsPicking(true)}
@@ -82,6 +88,9 @@ export default function SettingsScreen() {
         ))}
       </View>
 
+      <Text style={styles.sectionTitle}>Game disguise</Text>
+      <DisguiseSettings />
+
       <Pressable style={styles.danger} onPress={confirmReset}>
         <Text style={styles.dangerText}>Reset identity</Text>
       </Pressable>
@@ -94,7 +103,7 @@ export default function SettingsScreen() {
           onClose={() => setIsPicking(false)}
         />
       )}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 

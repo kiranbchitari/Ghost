@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Ghost",
+    "name": "Snake",
     "slug": "ghost",
     "version": "1.0.0",
     "scheme": "ghost",
@@ -14,7 +14,7 @@
     "android": {
       "package": "com.kiran.ghost",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#c7d9a3",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"

@@ -1,15 +1,18 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
-import { StyleSheet } from 'react-native';
+import { useEffect, type PropsWithChildren } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 
 import { DialogHost } from '@/components/dialog';
+import { DisguiseProvider, useDisguise } from '@/features/disguise/disguise-provider';
+import { SnakeGame } from '@/features/disguise/snake-game';
 import { useDeliveryReceipts } from '@/features/messaging/use-delivery-receipts';
 import { ConnectScreen } from '@/features/security/connect-screen';
 import { PanicButton } from '@/features/security/panic-button';
 import { ScreenProtection } from '@/features/security/screen-protection';
+import { useAppState } from '@/hooks/use-app-state';
 import { SessionProvider, useSession } from '@/hooks/use-session';
 import { getDeviceKeyPair } from '@/services/encryption/device-keys';
 import { PrivacyCover } from '@/theme/privacy-cover';
@@ -41,6 +44,35 @@ function RootNavigator() {
   );
 }
 
+// Ghost is always a Snake game on the outside: while locked only the game
+// exists (no chats, panic button or screenshot blocking to give it away).
+// While unlocked, the game covers the app whenever it leaves the foreground,
+// so the app switcher shows Snake.
+function DisguiseGate({ children }: PropsWithChildren) {
+  const { isLocked, isCaptureBlocked } = useDisguise();
+
+  return (
+    <>
+      {isCaptureBlocked && <ScreenProtection />}
+      {isLocked ? <SnakeGame /> : <Unlocked>{children}</Unlocked>}
+    </>
+  );
+}
+
+function Unlocked({ children }: PropsWithChildren) {
+  const appState = useAppState();
+  return (
+    <>
+      {children}
+      {appState !== 'active' && (
+        <View style={styles.cover} pointerEvents="none">
+          <SnakeGame />
+        </View>
+      )}
+    </>
+  );
+}
+
 function ThemedStatusBar() {
   const { theme } = useAppTheme();
   return <StatusBar style={theme.isDark ? 'light' : 'dark'} />;
@@ -52,12 +84,15 @@ export default function RootLayout() {
       <KeyboardProvider>
         <AppThemeProvider>
           <SessionProvider>
-            <RootNavigator />
-            <ThemedStatusBar />
-            <DialogHost />
-            <PanicButton />
-            <PrivacyCover />
-            <ScreenProtection />
+            <DisguiseProvider>
+              <DisguiseGate>
+                <RootNavigator />
+                <ThemedStatusBar />
+                <DialogHost />
+                <PanicButton />
+                <PrivacyCover />
+              </DisguiseGate>
+            </DisguiseProvider>
           </SessionProvider>
         </AppThemeProvider>
       </KeyboardProvider>
@@ -65,4 +100,8 @@ export default function RootLayout() {
   );
 }
 
-const styles = StyleSheet.create({ root: { flex: 1 } });
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  // Above the privacy cover (1000).
+  cover: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1001, elevation: 1001 },
+});

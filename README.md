@@ -72,11 +72,41 @@ Migration: `supabase/migrations/20261031140000_burn_timers.sql`.
 ### Panic lock
 
 A red power button floats over every screen, including photo/settings modals
-(`src/features/security/panic-button.tsx`). One tap, no confirmation, closes Ghost and kills its
-process so decrypted messages and keys leave RAM; the identity and chats are untouched. Drag the
-button if it covers something. It needs the local native module `modules/panic-lock` (autolinked),
-so it works in a development build, not Expo Go (Android falls back to `BackHandler.exitApp()`,
-iOS does nothing beyond clearing in-memory keys). On Android the task is also removed from Recents.
+(`src/features/security/panic-button.tsx`). No confirmation, so it's fast in a panic. Drag the
+button if it covers something.
+
+- **Tap**: hides Ghost behind the Snake game. Keys are wiped from memory and every chat screen
+  unmounts, exactly as when the app locks; the master key opens it again (see Game disguise).
+- **Hold**: closes the app outright and kills its process so decrypted messages and keys leave
+  RAM; the identity and chats are untouched. This needs the local native module
+  `modules/panic-lock` (autolinked), so it works in a development build, not Expo Go (Android
+  falls back to `BackHandler.exitApp()`, iOS does nothing beyond clearing in-memory keys). On
+  Android the task is also removed from Recents.
+
+### Game disguise
+
+The app installs as **Snake** (name and pixel-art icon) and always opens as a real, playable
+Snake game (`src/features/disguise/`); there is no setting to turn that off. Ghost is locked on
+every launch and every time it goes to the background. While locked only the game is mounted (no
+chats or panic button to give it away). Screen capture is blocked while Ghost is unlocked and
+stays blocked after it locks on the way to the background until the app is opened again, because
+Android takes the Recents snapshot after the app has left the screen: leaving from a chat gives a
+blank thumbnail, leaving from the game shows the game. iOS also blurs its app switcher snapshot
+while Ghost is unlocked. In the game, Settings → Redeem code takes the master key; anything else
+is an "Invalid code". After 5 wrong keys every try fails for a minute.
+
+Until a master key is set, the starting key `ghost` opens Ghost, which then nudges the person to
+set their own (Settings → Game disguise; `ghost` itself isn't accepted as a key). Only a salted,
+stretched SHA-512 hash of the key is kept, in SecureStore (`src/services/security/master-key.ts`).
+If that can't be read, nothing opens Ghost: it fails closed rather than falling back to `ghost`.
+
+The game's Reset game data erases the scores and, out of sight, the Ghost identity with its keys
+and chats, but keeps the master key: the app stays Snake, and Redeem code leads to a fresh, empty
+Ghost. A forgotten key has no recovery other than reinstalling, which wipes everything and brings
+back the starting key; because the iOS keychain survives an uninstall, a fresh install (no
+AsyncStorage marker) drops any master key left behind. Icons are generated:
+`python3 scripts/make-snake-icons.py assets` redraws `assets/icon.png`, the `android-icon-*.png`
+files, the splash icon and the favicon.
 
 ### Receipts
 
