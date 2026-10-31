@@ -17,9 +17,12 @@ in the Supabase dashboard. "Reset identity" in Settings signs out and mints a fr
 
 ### Messaging
 
-Each user gets an 8-character Ghost code (`profiles.ghost_code`, created by a trigger on sign-up).
-Entering a friend's code calls `start_conversation(code)`, which opens or reuses the one-to-one chat;
-codes can't be listed. Messages arrive live via Supabase Realtime. Schema and RLS:
+Each user gets a Ghost code made of a hero name and four digits, like `Thor4821`
+(`profiles.ghost_code`, created by a trigger on sign-up; matched case-insensitively). Entering a
+friend's code calls `start_conversation(code)`, which opens or reuses the one-to-one chat; codes
+can't be listed, and 20 wrong codes in an hour block further tries. The hero names live in both
+`generate_ghost_code()` (`supabase/migrations/20261031150000_hero_codes.sql`) and
+`src/features/profile/heroes.ts`; keep them in step. Messages arrive live via Supabase Realtime. Schema and RLS:
 `supabase/migrations/20261031090000_messaging.sql`; client code: `src/features/messaging/`.
 
 ### Hero avatars
@@ -65,6 +68,15 @@ messages burn on screen and are deleted by `burn_expired_messages`; a pg_cron jo
 when no one has the chat open (enable pg_cron under Database → Extensions). Screenshots and
 screen recordings are blocked app-wide (`src/features/security/screen-protection.tsx`).
 Migration: `supabase/migrations/20261031140000_burn_timers.sql`.
+
+### Panic lock
+
+A red power button floats over every screen, including photo/settings modals
+(`src/features/security/panic-button.tsx`). One tap, no confirmation, closes Ghost and kills its
+process so decrypted messages and keys leave RAM; the identity and chats are untouched. Drag the
+button if it covers something. It needs the local native module `modules/panic-lock` (autolinked),
+so it works in a development build, not Expo Go (Android falls back to `BackHandler.exitApp()`,
+iOS does nothing beyond clearing in-memory keys). On Android the task is also removed from Recents.
 
 ### Receipts
 

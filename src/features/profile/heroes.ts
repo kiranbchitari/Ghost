@@ -49,11 +49,22 @@ export const HEROES: Hero[] = [
 
 const BY_ID = new Map(HEROES.map((hero) => [hero.id, hero]));
 
-// The chosen hero, or one picked from the Ghost code so everyone gets a stable
-// avatar before choosing (and both sides of a chat agree on it).
+// Ghost codes are a hero's name plus four digits (Thor4821, SpiderMan0397).
+// generate_ghost_code() in supabase/migrations/20261031150000_hero_codes.sql
+// holds the same names, so add a hero there too.
+const codeName = (hero: Hero) => hero.name.replace(/^The /, '').replace(/[^A-Za-z]/g, '').toLowerCase();
+const BY_CODE_NAME = new Map(HEROES.map((hero) => [codeName(hero), hero]));
+
+// The chosen hero, else the one in the Ghost code, else (older random codes)
+// one picked from the code, so everyone gets a stable avatar before choosing
+// and both sides of a chat agree on it.
 export function heroFor(avatar: string | null | undefined, ghostCode: string | null | undefined) {
   const chosen = avatar ? BY_ID.get(avatar) : undefined;
   if (chosen) return chosen;
+
+  const inCode = /^([a-z]+)\d{4}$/i.exec(ghostCode ?? '');
+  const named = inCode ? BY_CODE_NAME.get(inCode[1].toLowerCase()) : undefined;
+  if (named) return named;
 
   let hash = 0;
   for (const char of ghostCode ?? '') hash = (hash * 31 + char.charCodeAt(0)) >>> 0;

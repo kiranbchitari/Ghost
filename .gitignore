@@ -40,6 +40,10 @@ yarn-error.*
 /ios
 /android
 
+# local Expo modules' build output
+/modules/*/android/build/
+/modules/*/ios/build/
+
 # Supabase local
 supabase/.temp/
 supabase/.branches/

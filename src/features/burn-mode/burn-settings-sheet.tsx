@@ -1,9 +1,11 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DialogHost, showAlert } from '@/components/dialog';
 import { BURN_OPTIONS, describeBurn } from '@/features/burn-mode/timer';
 import type { BurnMode, ConversationSettings } from '@/features/messaging/api';
+import { PanicButton } from '@/features/security/panic-button';
 import { useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
 
@@ -26,7 +28,7 @@ export function BurnSettingsSheet({ settings, onChange, onErase, onClose }: Prop
   const summary = describeBurn(settings.burn_seconds, settings.burn_mode);
 
   function confirmErase() {
-    Alert.alert(
+    showAlert(
       'Erase chat for everyone?',
       'Every message and photo in this chat burns on both phones and is deleted from the server. This cannot be undone.',
       [
@@ -40,12 +42,18 @@ export function BurnSettingsSheet({ settings, onChange, onErase, onClose }: Prop
           },
         },
       ],
+      { icon: 'flame' },
     );
   }
 
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={[styles.container, { paddingBottom: insets.bottom + 12 }]}>
+      {/* Android has no page sheets: the Modal is full screen and starts under the status bar. */}
+      <View
+        style={[
+          styles.container,
+          { paddingTop: Platform.OS === 'android' ? insets.top : 0, paddingBottom: insets.bottom + 12 },
+        ]}>
         <View style={styles.topBar}>
           <Text style={styles.title}>Burn settings</Text>
           <Pressable onPress={onClose} accessibilityRole="button" hitSlop={12}>
@@ -103,6 +111,8 @@ export function BurnSettingsSheet({ settings, onChange, onErase, onClose }: Prop
           </Pressable>
         </View>
       </View>
+      <DialogHost />
+      <PanicButton />
     </Modal>
   );
 }
@@ -120,8 +130,7 @@ const createStyles = ({ colors }: AppTheme) =>
       borderBottomColor: colors.border,
     },
     title: { color: colors.text, fontSize: 17, fontWeight: '600' },
-    // Kept clear of the top-right corner, where Expo Go's dev button sits.
-    done: { color: colors.tint, fontSize: 17, fontWeight: '600', marginRight: 64 },
+    done: { color: colors.tint, fontSize: 17, fontWeight: '600' },
     body: { flex: 1, padding: 16 },
     section: {
       color: colors.textMuted,

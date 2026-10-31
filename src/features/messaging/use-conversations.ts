@@ -56,11 +56,15 @@ export function useConversations() {
   );
 
   // Any new message the user can see (RLS-filtered) may change the list order
-  // or preview, so reload on every insert.
+  // or preview, so reload on every insert. Updates (read, deleted) change
+  // unread counts.
   useEffect(() => {
     const channel = supabase
       .channel('conversation-list')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, () => {
+        reload();
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, () => {
         reload();
       })
       .subscribe();

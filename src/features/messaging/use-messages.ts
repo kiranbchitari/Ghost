@@ -259,9 +259,9 @@ export function useMessages(conversationId: string) {
   );
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, replyTo?: string) => {
       if (!sharedKey) throw new Error('Encryption is not ready for this chat yet.');
-      const message = await sendMessage(conversationId, encrypt(text, sharedKey));
+      const message = await sendMessage(conversationId, encrypt(text, sharedKey), undefined, replyTo);
       setMessages((prev) => merge([message], prev));
     },
     [conversationId, sharedKey],

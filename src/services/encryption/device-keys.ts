@@ -46,6 +46,14 @@ export async function deleteDeviceKeyPair(userId: string) {
   await SecureStore.deleteItemAsync(storageKey(userId));
 }
 
+// Forgets every key held in memory (the stored private key is untouched).
+export function clearDeviceKeyCache() {
+  keyPairs.forEach((pending) => pending.then(({ secretKey }) => secretKey.fill(0)).catch(() => {}));
+  keyPairs.clear();
+  sharedKeys.forEach((key) => key.fill(0));
+  sharedKeys.clear();
+}
+
 async function loadOrCreate(userId: string): Promise<DeviceKeyPair> {
   const stored = await SecureStore.getItemAsync(storageKey(userId));
   const secretKey = stored ? decodeKey(stored) : generateSecretKey();

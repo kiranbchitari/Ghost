@@ -1,17 +1,19 @@
-import { router } from 'expo-router';
-import { useState } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import * as Clipboard from 'expo-clipboard';
+import { router, Tabs } from 'expo-router';
+import * as Haptics from 'expo-haptics';
+import { useEffect, useState } from 'react';
 import {
-  Alert,
   FlatList,
   Pressable,
   RefreshControl,
-  Share,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
 
+import { showError } from '@/components/dialog';
 import { startConversation } from '@/features/messaging/api';
 import { maskText } from '@/features/messaging/mask';
 import { useConversations } from '@/features/messaging/use-conversations';
@@ -28,9 +30,17 @@ export default function ChatsScreen() {
   const { conversations, error, isRefreshing, refresh } = useConversations();
   const [friendCode, setFriendCode] = useState('');
   const [isStarting, setIsStarting] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+
+  // Show the tick for a moment after copying.
+  useEffect(() => {
+    if (!isCopied) return;
+    const timer = setTimeout(() => setIsCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [isCopied]);
 
   async function startChat() {
-    const code = friendCode.trim().toUpperCase();
+    const code = friendCode.trim();
     if (!code || isStarting) return;
 
     setIsStarting(true);
@@ -39,37 +49,32 @@ export default function ChatsScreen() {
       setFriendCode('');
       router.push({ pathname: '/chat/[id]', params: { id, code } });
     } catch (e) {
-      Alert.alert((e as Error).message);
+      showError("Couldn't start chat", e);
     } finally {
       setIsStarting(false);
     }
   }
 
-  function shareCode() {
-    if (myCode) Share.share({ message: `Chat with me on Ghost. My code: ${myCode}` });
+  async function copyCode() {
+    if (!myCode) return;
+    await Clipboard.setStringAsync(myCode);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    setIsCopied(true);
   }
 
   const header = (
     <View style={styles.header}>
-      <Pressable style={styles.codeCard} onPress={shareCode} disabled={!myCode}>
-        {myHero && <HeroAvatar hero={myHero} size={52} />}
-        <Text style={styles.codeLabel}>Your Ghost code</Text>
-        <Text style={styles.code}>{myCode ?? '········'}</Text>
-        <Text style={styles.codeHint}>
-          {codeError ?? 'Tap to share. Anyone with this code can start a chat with you.'}
-        </Text>
-      </Pressable>
-
       <View style={styles.newChat}>
         <TextInput
           style={styles.input}
-          placeholder="Friend's code"
+          placeholder="Friend's code, e.g. Thor4821"
           placeholderTextColor={theme.colors.placeholder}
           selectionColor={theme.colors.tint}
           keyboardAppearance={theme.isDark ? 'dark' : 'light'}
-          autoCapitalize="characters"
+          autoCapitalize="none"
           autoCorrect={false}
-          maxLength={8}
+          spellCheck={false}
+          maxLength={24}
           value={friendCode}
           onChangeText={setFriendCode}
           onSubmitEditing={startChat}
@@ -83,12 +88,45 @@ export default function ChatsScreen() {
         </Pressable>
       </View>
 
+      {codeError && <Text style={styles.error}>{codeError}</Text>}
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
 
   return (
-    <FlatList
+    <>
+      <Tabs.Screen
+        options={{
+          // Like WhatsApp's wordmark: your code, left-aligned in the header.
+          headerTitleAlign: 'left',
+          headerTitle: () => (
+            <Pressable
+              style={styles.brand}
+              onPress={copyCode}
+              disabled={!myCode}
+              accessibilityRole="button"
+              accessibilityLabel={myCode ? `Your Ghost code ${myCode}` : 'Your Ghost code'}
+              accessibilityHint="Copies your code">
+              {myHero && <HeroAvatar hero={myHero} size={30} />}
+              <Text style={styles.brandCode} numberOfLines={1} adjustsFontSizeToFit>
+                {myCode ?? '········'}
+              </Text>
+            </Pressable>
+          ),
+          headerRight: () => (
+            <Pressable
+              style={styles.headerButton}
+              onPress={copyCode}
+              disabled={!myCode}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={isCopied ? 'Copied' : 'Copy your Ghost code'}>
+              <Ionicons name={isCopied ? 'checkmark' : 'copy-outline'} size={22} color={theme.colors.tint} />
+            </Pressable>
+          ),
+        }}
+      />
+      <FlatList
       style={styles.screen}
       data={conversations}
       keyExtractor={(c) => c.conversation_id}
@@ -98,37 +136,49 @@ export default function ChatsScreen() {
       refreshControl={
         <RefreshControl refreshing={isRefreshing} onRefresh={refresh} tintColor={theme.colors.textMuted} />
       }
-      renderItem={({ item }) => (
-        <Pressable
-          style={styles.row}
-          onPress={() =>
-            router.push({
-              pathname: '/chat/[id]',
-              params: { id: item.conversation_id, code: item.friend_code },
-            })
-          }>
-          <HeroAvatar hero={heroFor(item.friend_avatar, item.friend_code)} size={46} />
-          <View style={styles.rowBody}>
-            <View style={styles.rowTop}>
-              <Text style={styles.rowTitle}>{item.friend_code}</Text>
-              <Text style={styles.rowTime}>
-                {new Date(item.last_message_at).toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Text>
+      renderItem={({ item }) => {
+        const unread = item.unread_count ?? 0;
+        return (
+          <Pressable
+            style={styles.row}
+            onPress={() =>
+              router.push({
+                pathname: '/chat/[id]',
+                params: { id: item.conversation_id, code: item.friend_code },
+              })
+            }>
+            <HeroAvatar hero={heroFor(item.friend_avatar, item.friend_code)} size={46} />
+            <View style={styles.rowBody}>
+              <View style={styles.rowTop}>
+                <Text style={styles.rowTitle}>{item.friend_code}</Text>
+                {/* Like WhatsApp, the time takes the accent colour while there's unread. */}
+                <Text style={[styles.rowTime, unread > 0 && styles.rowTimeUnread]}>
+                  {new Date(item.last_message_at).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </Text>
+              </View>
+              <View style={styles.rowBottom}>
+                <Text style={styles.rowPreview} numberOfLines={1}>
+                  {item.preview === null
+                    ? 'No messages yet'
+                    : theme.privacy?.maskMessages
+                      ? maskText(item.preview)
+                      : item.preview}
+                </Text>
+                {unread > 0 && (
+                  <View style={styles.badge} accessibilityLabel={`${unread} unread`}>
+                    <Text style={styles.badgeText}>{unread > 99 ? '99+' : unread}</Text>
+                  </View>
+                )}
+              </View>
             </View>
-            <Text style={styles.rowPreview} numberOfLines={1}>
-              {item.preview === null
-                ? 'No messages yet'
-                : theme.privacy?.maskMessages
-                  ? maskText(item.preview)
-                  : item.preview}
-            </Text>
-          </View>
-        </Pressable>
-      )}
-    />
+          </Pressable>
+        );
+      }}
+      />
+    </>
   );
 }
 
@@ -136,32 +186,23 @@ const createStyles = ({ colors, glow }: AppTheme) =>
   StyleSheet.create({
     screen: { backgroundColor: colors.background },
     header: { padding: 16, gap: 12 },
-    codeCard: {
-      backgroundColor: colors.codeCard,
-      borderColor: colors.codeCardBorder,
-      borderWidth: 1,
-      borderRadius: 12,
-      padding: 16,
-      alignItems: 'center',
-      gap: 6,
-    },
-    codeLabel: { color: colors.codeCardMuted, fontSize: 13 },
-    code: {
-      color: colors.codeCardText,
-      fontSize: 28,
-      fontFamily: 'Menlo',
-      letterSpacing: 3,
-      marginVertical: 4,
+    brand: { flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1 },
+    brandCode: {
+      flexShrink: 1,
+      color: colors.tint,
+      fontSize: 24,
+      fontWeight: '800',
+      letterSpacing: 0.3,
       // Padding gives the glow room: iOS clips text shadows to the Text frame.
       ...(glow && {
         textShadowColor: glow,
-        textShadowRadius: 12,
+        textShadowRadius: 10,
         textShadowOffset: { width: 0, height: 0 },
-        padding: 14,
-        marginVertical: -10,
+        paddingHorizontal: 8,
+        marginHorizontal: -8,
       }),
     },
-    codeHint: { color: colors.codeCardMuted, fontSize: 12, textAlign: 'center' },
+    headerButton: { paddingHorizontal: 16 },
     newChat: { flexDirection: 'row', gap: 8 },
     input: {
       flex: 1,
@@ -171,7 +212,6 @@ const createStyles = ({ colors, glow }: AppTheme) =>
       paddingHorizontal: 12,
       paddingVertical: 10,
       fontSize: 16,
-      fontFamily: 'Menlo',
       color: colors.text,
       backgroundColor: colors.input,
     },
@@ -183,7 +223,19 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 12 },
     rowBody: { flex: 1 },
     rowTop: { flexDirection: 'row', justifyContent: 'space-between' },
-    rowTitle: { fontSize: 16, fontWeight: '600', fontFamily: 'Menlo', color: colors.text },
+    rowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
     rowTime: { color: colors.textMuted, fontSize: 12 },
-    rowPreview: { color: colors.textMuted, marginTop: 2 },
+    rowTimeUnread: { color: colors.accent, fontWeight: '700' },
+    rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+    rowPreview: { flex: 1, color: colors.textMuted },
+    badge: {
+      minWidth: 22,
+      height: 22,
+      borderRadius: 11,
+      paddingHorizontal: 6,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.accent,
+    },
+    badgeText: { color: colors.onAccent, fontSize: 12, fontWeight: '700' },
   });

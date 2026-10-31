@@ -23,6 +23,9 @@ export type Message = {
   // Disappearing-message timer copied from the conversation when sent.
   burn_seconds: number | null;
   burn_mode: BurnMode | null;
+  // The message this one replies to (same chat); null if not a reply, or once
+  // the quoted message is gone.
+  reply_to: string | null;
 };
 
 export type BurnMode = 'read' | 'sent';
@@ -44,6 +47,9 @@ export type ConversationSummary = {
   last_kind: 'text' | 'image' | null;
   last_deleted: boolean | null;
   last_message_at: string;
+  // Messages from the friend not yet read here. Missing before the
+  // unread-counts migration; treat as 0.
+  unread_count?: number;
 };
 
 export type ConversationPeer = {
@@ -70,6 +76,8 @@ export async function setAvatar(avatar: string | null) {
 export async function startConversation(friendCode: string) {
   const { data, error } = await supabase.rpc('start_conversation', { friend_code: friendCode });
   if (error) throw new Error(error.message);
+  // null (not an error) so the server can count wrong codes.
+  if (!data) throw new Error('No Ghost found with that code');
   return data as string;
 }
 
@@ -114,6 +122,7 @@ export async function sendMessage(
   conversationId: string,
   { ciphertext, nonce }: Encrypted,
   image?: { attachmentPath: string; viewOnce: boolean },
+  replyTo?: string,
 ) {
   const { data, error } = await supabase
     .from('messages')
@@ -122,6 +131,7 @@ export async function sendMessage(
       ciphertext,
       nonce,
       ...(image && { kind: 'image', attachment_path: image.attachmentPath, view_once: image.viewOnce }),
+      ...(replyTo && { reply_to: replyTo }),
     })
     .select()
     .single();

@@ -11,7 +11,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DialogHost } from '@/components/dialog';
 import type { PickedImage } from '@/features/burn-photo/pick-image';
+import { PanicButton } from '@/features/security/panic-button';
 import { useAppTheme } from '@/theme/theme-provider';
 
 type Props = {
@@ -82,6 +84,8 @@ export function PhotoComposer({ image, onCancel, onSend }: Props) {
           )}
         </Pressable>
       </View>
+      <DialogHost />
+      <PanicButton />
     </Modal>
   );
 }

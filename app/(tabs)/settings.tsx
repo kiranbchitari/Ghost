@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { showAlert, showError } from '@/components/dialog';
 import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { HeroPicker } from '@/features/profile/hero-picker';
 import { useMyProfile } from '@/features/profile/use-my-profile';
@@ -27,17 +28,18 @@ export default function SettingsScreen() {
   }
 
   function chooseHero(next: string | null) {
-    setAvatar(next).catch((e: Error) => Alert.alert(e.message));
+    setAvatar(next).catch((e: Error) => showError("Couldn't change hero", e));
   }
 
   function confirmReset() {
-    Alert.alert(
+    showAlert(
       'Reset identity?',
       'You will get a new anonymous identity and Ghost code. Your encryption key is destroyed, so your current chats are gone for good.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Reset', style: 'destructive', onPress: reset },
       ],
+      { icon: 'refresh' },
     );
   }
 
@@ -61,7 +63,9 @@ export default function SettingsScreen() {
           </Text>
         )}
         <Text style={styles.label}>Your Ghost code</Text>
-        <Text style={styles.code}>{code ?? '········'}</Text>
+        <Text style={styles.code} numberOfLines={1} adjustsFontSizeToFit>
+          {code ?? '········'}
+        </Text>
       </View>
 
       <Text style={styles.sectionTitle}>Theme</Text>
@@ -161,9 +165,9 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     heroName: { color: colors.text, fontSize: 16, fontWeight: '600', marginTop: 8, marginBottom: 8 },
     label: { color: colors.textMuted },
     code: {
-      fontSize: 24,
-      fontFamily: 'Menlo',
-      letterSpacing: 3,
+      fontSize: 26,
+      fontWeight: '700',
+      letterSpacing: 0.5,
       marginTop: 4,
       color: colors.text,
       // Padding gives the glow room: iOS clips text shadows to the Text frame.

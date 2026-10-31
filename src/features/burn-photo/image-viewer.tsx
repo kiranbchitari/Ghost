@@ -2,8 +2,10 @@ import { usePreventScreenCapture } from 'expo-screen-capture';
 import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DialogHost } from '@/components/dialog';
 import { useDecryptedImage } from '@/features/messaging/attachments';
 import type { DisplayMessage } from '@/features/messaging/use-messages';
+import { PanicButton } from '@/features/security/panic-button';
 
 type Props = {
   message: DisplayMessage;
@@ -41,6 +43,8 @@ export function ImageViewer({ message, sharedKey, onClose }: Props) {
           </View>
         </View>
       </View>
+      <DialogHost />
+      <PanicButton />
     </Modal>
   );
 }

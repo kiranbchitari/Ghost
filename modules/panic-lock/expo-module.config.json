@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["PanicLockModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.paniclock.PanicLockModule"]
+  }
+}

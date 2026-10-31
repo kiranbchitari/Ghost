@@ -1,8 +1,10 @@
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DialogHost } from '@/components/dialog';
 import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { HEROES, heroFor, type Hero } from '@/features/profile/heroes';
+import { PanicButton } from '@/features/security/panic-button';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
 
@@ -25,7 +27,12 @@ export function HeroPicker({ ghostCode, selected, onSelect, onClose }: Props) {
 
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+      {/* Android has no page sheets: the Modal is full screen and starts under the status bar. */}
+      <View
+        style={[
+          styles.container,
+          { paddingTop: Platform.OS === 'android' ? insets.top : 0, paddingBottom: insets.bottom },
+        ]}>
         <View style={styles.topBar}>
           <Text style={styles.title}>Choose your hero</Text>
           <Pressable onPress={onClose} accessibilityRole="button">
@@ -73,6 +80,8 @@ export function HeroPicker({ ghostCode, selected, onSelect, onClose }: Props) {
           </Text>
         </ScrollView>
       </View>
+      <DialogHost />
+      <PanicButton />
     </Modal>
   );
 }

@@ -1,9 +1,14 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 
+import { DialogHost } from '@/components/dialog';
 import { useDeliveryReceipts } from '@/features/messaging/use-delivery-receipts';
 import { ConnectScreen } from '@/features/security/connect-screen';
+import { PanicButton } from '@/features/security/panic-button';
 import { ScreenProtection } from '@/features/security/screen-protection';
 import { SessionProvider, useSession } from '@/hooks/use-session';
 import { getDeviceKeyPair } from '@/services/encryption/device-keys';
@@ -43,13 +48,21 @@ function ThemedStatusBar() {
 
 export default function RootLayout() {
   return (
-    <AppThemeProvider>
-      <SessionProvider>
-        <RootNavigator />
-        <ThemedStatusBar />
-        <PrivacyCover />
-        <ScreenProtection />
-      </SessionProvider>
-    </AppThemeProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <KeyboardProvider>
+        <AppThemeProvider>
+          <SessionProvider>
+            <RootNavigator />
+            <ThemedStatusBar />
+            <DialogHost />
+            <PanicButton />
+            <PrivacyCover />
+            <ScreenProtection />
+          </SessionProvider>
+        </AppThemeProvider>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({ root: { flex: 1 } });

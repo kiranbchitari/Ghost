@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import * as Haptics from 'expo-haptics';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
+import Animated, { interpolate, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 
 import { formatBurn } from '@/features/burn-mode/timer';
 import { BurnEffect } from '@/features/burn-photo/burn-effect';
 import { useDecryptedImage } from '@/features/messaging/attachments';
 import { maskText } from '@/features/messaging/mask';
+import type { Quote } from '@/features/messaging/reply';
 import type { DisplayMessage } from '@/features/messaging/use-messages';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
@@ -13,14 +19,34 @@ type Props = {
   message: DisplayMessage;
   isMine: boolean;
   sharedKey: Uint8Array | null;
+  quote: Quote | null;
+  // Selected for the header's actions (or briefly highlighted after jumping to it).
+  isSelected: boolean;
+  // While a message is selected, a tap selects instead of opening.
+  isSelecting: boolean;
   onOpenImage: (message: DisplayMessage) => void;
-  onDelete: (message: DisplayMessage) => void;
+  onSelect: (message: DisplayMessage) => void;
+  onReply: (message: DisplayMessage) => void;
+  onQuotePress: (messageId: string) => void;
 };
 
 const IMAGE_WIDTH = 230;
 const IMAGE_MAX_HEIGHT = 300;
+// How far to swipe right before letting go replies.
+const REPLY_DISTANCE = 64;
 
-export function MessageBubble({ message, isMine, sharedKey, onOpenImage, onDelete }: Props) {
+export function MessageBubble({
+  message,
+  isMine,
+  sharedKey,
+  quote,
+  isSelected,
+  isSelecting,
+  onOpenImage,
+  onSelect,
+  onReply,
+  onQuotePress,
+}: Props) {
   const styles = useThemedStyles(createStyles);
 
   // When a message is deleted, or a view-once photo is opened, keep showing
@@ -41,27 +67,97 @@ export function MessageBubble({ message, isMine, sharedKey, onOpenImage, onDelet
   // Expired by a timer or an erase: after burning, nothing is left behind.
   if (!burning && !aboutToBurn && message.isExpired) return null;
 
+  const isLive = !burning && !aboutToBurn && !message.isDeleted;
+
   return (
-    <View style={[styles.row, isMine ? styles.rowMine : styles.rowTheirs]}>
-      {burning ? (
-        // The wrapper takes the bubble's max width so the text wraps exactly as
-        // it did before burning; the bubble then fills it.
-        <BurnEffect onDone={finishBurning} style={styles.burnWrapper}>
-          <Bubble message={burning} isMine={isMine} sharedKey={sharedKey} styles={styles} fill />
-        </BurnEffect>
-      ) : aboutToBurn ? (
-        <Bubble message={aboutToBurn} isMine={isMine} sharedKey={sharedKey} styles={styles} />
-      ) : (
-        <Bubble
-          message={message}
-          isMine={isMine}
-          sharedKey={sharedKey}
-          styles={styles}
-          onOpenImage={onOpenImage}
-          onDelete={onDelete}
-        />
-      )}
-    </View>
+    <SwipeToReply enabled={isLive} onReply={() => onReply(message)} styles={styles}>
+      <View style={[styles.row, isMine ? styles.rowMine : styles.rowTheirs, isSelected && styles.rowSelected]}>
+        {burning ? (
+          // The wrapper takes the bubble's max width so the text wraps exactly as
+          // it did before burning; the bubble then fills it.
+          <BurnEffect onDone={finishBurning} style={styles.burnWrapper}>
+            <Bubble message={burning} isMine={isMine} sharedKey={sharedKey} styles={styles} fill />
+          </BurnEffect>
+        ) : aboutToBurn ? (
+          <Bubble message={aboutToBurn} isMine={isMine} sharedKey={sharedKey} styles={styles} />
+        ) : (
+          <Bubble
+            message={message}
+            isMine={isMine}
+            sharedKey={sharedKey}
+            styles={styles}
+            quote={quote}
+            isSelecting={isSelecting}
+            onOpenImage={onOpenImage}
+            onSelect={onSelect}
+            onQuotePress={onQuotePress}
+          />
+        )}
+      </View>
+    </SwipeToReply>
+  );
+}
+
+// WhatsApp's swipe to reply: drag a message right until the reply arrow fills
+// in (with a tick of haptics), then let go. Vertical drags still scroll.
+function SwipeToReply({
+  enabled,
+  onReply,
+  styles,
+  children,
+}: {
+  enabled: boolean;
+  onReply: () => void;
+  styles: Styles;
+  children: ReactNode;
+}) {
+  const { theme } = useAppTheme();
+  const offset = useSharedValue(0);
+  const armed = useSharedValue(false);
+  const tick = () => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+  const pan = usePanGesture({
+    enabled,
+    // Only a rightward drag starts it; a vertical one leaves it to the list.
+    activeOffsetX: [-10000, 12],
+    failOffsetY: [-12, 12],
+    onUpdate: (event) => {
+      'worklet';
+      const x = Math.max(0, event.translationX);
+      // Follows the finger, then resists past the reply point.
+      offset.value = x < REPLY_DISTANCE ? x : REPLY_DISTANCE + (x - REPLY_DISTANCE) * 0.25;
+      const reached = x >= REPLY_DISTANCE;
+      if (reached !== armed.value) {
+        armed.value = reached;
+        if (reached) scheduleOnRN(tick);
+      }
+    },
+    onDeactivate: (event) => {
+      'worklet';
+      if (armed.value && !event.canceled) scheduleOnRN(onReply);
+    },
+    onFinalize: () => {
+      'worklet';
+      armed.value = false;
+      offset.value = withTiming(0, { duration: 180 });
+    },
+  });
+
+  const slide = useAnimatedStyle(() => ({ transform: [{ translateX: offset.value }] }));
+  const icon = useAnimatedStyle(() => ({
+    opacity: interpolate(offset.value, [16, REPLY_DISTANCE], [0, 1], 'clamp'),
+    transform: [{ scale: interpolate(offset.value, [16, REPLY_DISTANCE], [0.5, 1], 'clamp') }],
+  }));
+
+  return (
+    <GestureDetector gesture={pan}>
+      <Animated.View>
+        <Animated.View style={[styles.replyIcon, icon]}>
+          <Ionicons name="arrow-undo" size={18} color={theme.colors.text} />
+        </Animated.View>
+        <Animated.View style={slide}>{children}</Animated.View>
+      </Animated.View>
+    </GestureDetector>
   );
 }
 
@@ -77,12 +173,26 @@ type BubbleProps = {
   isMine: boolean;
   sharedKey: Uint8Array | null;
   styles: Styles;
+  quote?: Quote | null;
+  isSelecting?: boolean;
   onOpenImage?: (message: DisplayMessage) => void;
-  onDelete?: (message: DisplayMessage) => void;
+  onSelect?: (message: DisplayMessage) => void;
+  onQuotePress?: (messageId: string) => void;
   fill?: boolean;
 };
 
-function Bubble({ message, isMine, sharedKey, styles, onOpenImage, onDelete, fill }: BubbleProps) {
+function Bubble({
+  message,
+  isMine,
+  sharedKey,
+  styles,
+  quote,
+  isSelecting,
+  onOpenImage,
+  onSelect,
+  onQuotePress,
+  fill,
+}: BubbleProps) {
   const { theme } = useAppTheme();
   // Stealth: content stays masked until the bubble is pressed and held.
   const [isRevealed, setIsRevealed] = useState(false);
@@ -129,19 +239,46 @@ function Bubble({ message, isMine, sharedKey, styles, onOpenImage, onDelete, fil
     content = <Text style={textStyle}>{isMasked ? maskText(message.text) : message.text}</Text>;
   }
 
+  const canSelect = !message.isDeleted && !!onSelect;
+  const onPress = isSelecting
+    ? canSelect
+      ? () => onSelect(message)
+      : undefined
+    : canOpen && onOpenImage
+      ? () => onOpenImage(message)
+      : undefined;
+
   return (
     <Pressable
-      onPress={canOpen && onOpenImage ? () => onOpenImage(message) : undefined}
+      onPress={onPress}
       onPressIn={theme.privacy?.maskMessages ? () => setIsRevealed(true) : undefined}
       onPressOut={theme.privacy?.maskMessages ? () => setIsRevealed(false) : undefined}
-      onLongPress={isMine && !message.isDeleted && onDelete ? () => onDelete(message) : undefined}
-      delayLongPress={500}
+      // Like WhatsApp on Android: hold to select, then act from the header.
+      onLongPress={canSelect ? () => onSelect(message) : undefined}
+      delayLongPress={350}
       style={[
         styles.bubble,
         isMine ? styles.bubbleMine : styles.bubbleTheirs,
         isPlainPhoto && styles.bubblePhoto,
         fill && styles.bubbleFill,
       ]}>
+      {quote && (
+        <Pressable
+          onPress={quote.targetId && onQuotePress ? () => onQuotePress(quote.targetId!) : undefined}
+          disabled={isSelecting}
+          style={[styles.quote, { borderLeftColor: isMine ? styles.textMine.color : styles.textTheirs.color }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Reply to ${quote.author || 'a message'}: ${quote.text}`}>
+          {quote.author ? (
+            <Text style={[styles.quoteAuthor, isMine ? styles.textMine : styles.textTheirs]} numberOfLines={1}>
+              {quote.author}
+            </Text>
+          ) : null}
+          <Text style={[styles.quoteText, metaStyle]} numberOfLines={2}>
+            {quote.text}
+          </Text>
+        </Pressable>
+      )}
       {content}
       <View style={styles.metaRow}>
         <Text style={[styles.meta, metaStyle]}>{meta}</Text>
@@ -219,7 +356,29 @@ type Styles = ReturnType<typeof createStyles>;
 
 const createStyles = ({ colors, glow }: AppTheme) =>
   StyleSheet.create({
-    row: { flexDirection: 'row', marginVertical: 3 },
+    row: { flexDirection: 'row', paddingVertical: 3, paddingHorizontal: 12 },
+    // A tint across the whole row, like WhatsApp's selection.
+    rowSelected: { backgroundColor: `${colors.tint}33` },
+    // Revealed behind the message as it is swiped right.
+    replyIcon: {
+      position: 'absolute',
+      left: 14,
+      top: 0,
+      bottom: 0,
+      justifyContent: 'center',
+    },
+    quote: {
+      alignSelf: 'stretch',
+      minWidth: 120,
+      marginBottom: 4,
+      paddingVertical: 4,
+      paddingHorizontal: 8,
+      borderRadius: 8,
+      borderLeftWidth: 3,
+      backgroundColor: 'rgba(127,127,127,0.18)',
+    },
+    quoteAuthor: { fontSize: 13, fontWeight: '700' },
+    quoteText: { fontSize: 13 },
     rowMine: { justifyContent: 'flex-end' },
     rowTheirs: { justifyContent: 'flex-start' },
     bubble: {
