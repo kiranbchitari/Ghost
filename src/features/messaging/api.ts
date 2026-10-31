@@ -26,6 +26,20 @@ export type Message = {
   // The message this one replies to (same chat); null if not a reply, or once
   // the quoted message is gone.
   reply_to: string | null;
+  // When the sender last edited it. Missing before the message-edits
+  // migration; treat as never edited.
+  edited_at?: string | null;
+};
+
+// One member's reaction to a message. The emoji is encrypted with the chat's
+// shared key; ciphertext and nonce are null once the reaction is removed.
+export type StoredReaction = {
+  message_id: string;
+  conversation_id: string;
+  user_id: string;
+  ciphertext: string | null;
+  nonce: string | null;
+  updated_at: string;
 };
 
 export type BurnMode = 'read' | 'sent';
@@ -158,6 +172,39 @@ export async function sendMessage(
     throw new Error(error.message);
   }
   return data as Message;
+}
+
+// Replaces the text of one of your messages, within 5 minutes of sending.
+// Returns the server's edited_at.
+export async function editMessage(messageId: string, { ciphertext, nonce }: Encrypted) {
+  const { data, error } = await supabase.rpc('edit_message', {
+    p_message_id: messageId,
+    p_ciphertext: ciphertext,
+    p_nonce: nonce,
+  });
+  if (error) throw new Error(error.message);
+  return data as string;
+}
+
+// Reactions to the given messages (all in one chat), including removed ones.
+export async function listReactions(conversationId: string, messageIds: string[]) {
+  const { data, error } = await supabase
+    .from('message_reactions')
+    .select('*')
+    .eq('conversation_id', conversationId)
+    .in('message_id', messageIds);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as StoredReaction[];
+}
+
+// null removes your reaction.
+export async function setReaction(messageId: string, encrypted: Encrypted | null) {
+  const { error } = await supabase.rpc('set_reaction', {
+    p_message_id: messageId,
+    p_ciphertext: encrypted?.ciphertext ?? null,
+    p_nonce: encrypted?.nonce ?? null,
+  });
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteMessage(messageId: string) {

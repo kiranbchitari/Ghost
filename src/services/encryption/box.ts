@@ -54,6 +54,28 @@ export function decryptBytes(data: Uint8Array, nonce: string, sharedKey: Uint8Ar
   }
 }
 
+// Symmetric encryption for data that never leaves this phone (drafts):
+// XSalsa20-Poly1305 with a 32-byte key and a fresh random nonce each time.
+export function generateSymmetricKey() {
+  return nacl.randomBytes(nacl.secretbox.keyLength);
+}
+
+export function sealLocal(plaintext: string, key: Uint8Array): Encrypted {
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const box = nacl.secretbox(decodeUTF8(plaintext), nonce, key);
+  return { ciphertext: encodeBase64(box), nonce: encodeBase64(nonce) };
+}
+
+// Returns null if the data was tampered with or sealed with another key.
+export function openLocal({ ciphertext, nonce }: Encrypted, key: Uint8Array) {
+  try {
+    const opened = nacl.secretbox.open(decodeBase64(ciphertext), decodeBase64(nonce), key);
+    return opened ? encodeUTF8(opened) : null;
+  } catch {
+    return null;
+  }
+}
+
 // 128-bit random hex id, e.g. for attachment file names.
 // Random version 4 UUID (Hermes has no crypto.randomUUID).
 export function randomUuid() {

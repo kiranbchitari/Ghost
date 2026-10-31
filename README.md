@@ -115,6 +115,49 @@ recipient can set `delivered_at` / `read_at`, through `mark_messages_delivered()
 `mark_conversation_read()` (`supabase/migrations/20261031110000_receipts.sql`). Delivery is only
 recorded while the recipient's app is open; there are no push notifications yet.
 
+### Reactions
+
+Double-tap a message (or hold it) to open a WhatsApp-style tray: 👍 ❤️ 😂 😮 😢 🙏, or **+** for any
+emoji. Each person has one reaction per message; picking it again, or tapping the reactions under
+the bubble, takes it back. The emoji is encrypted with the chat key like a message, so the server
+only stores ciphertext (`message_reactions`, written through `set_reaction`). Removing a reaction
+clears its ciphertext rather than deleting the row, so the change reaches the other phone through
+Realtime. Deleting a message for everyone, burning it or erasing the chat removes its reactions.
+Stealth masks them as `•`. Client: `src/features/messaging/use-reactions.ts`.
+Migration: `supabase/migrations/20261031180000_reactions.sql`.
+
+### Typing indicators
+
+While the other person types, the chat header shows "typing…" and three dots bounce at the bottom
+of the chat. Nothing is stored: each chat has a private Realtime broadcast channel,
+`typing:<conversation_id>`, and Realtime Authorization policies on `realtime.messages` let only that
+chat's two members join it. The indicator refreshes every 2.5 s while typing, stops after 4 s idle,
+on send, or on leaving the app, and fades by itself after 6 s if the other phone goes quiet.
+Client: `src/features/messaging/use-typing.ts`.
+Migration: `supabase/migrations/20261031200000_typing_indicators.sql`.
+
+### Drafts
+
+Whatever is left unsent in a chat's composer (and the message it replies to) is kept per chat,
+across leaving the chat and restarting the app, and shows in the chat list as **Draft:** like
+WhatsApp. Drafts never leave the phone: each is sealed with NaCl `secretbox` under a per-identity key
+in SecureStore, and only ciphertext is written to AsyncStorage
+(`src/services/storage/encrypted-drafts.ts`). Reset identity and the game's Reset game data destroy
+the key and every draft; the panic button drops the key from memory and doesn't read it back as the
+chat closes.
+
+### Editing messages
+
+Hold one of your own text messages and tap the pencil to change it, for 5 minutes after sending.
+The new text is encrypted on the phone; `edit_message` swaps the ciphertext and stamps `edited_at`,
+and both phones show **Edited** next to the time. The server enforces the window (with 30 s of
+grace for network lag), and only for the sender's undeleted text messages. Whatever you were typing
+is set aside while you edit and comes back afterwards.
+Migration: `supabase/migrations/20261031190000_message_edits.sql`.
+
+All four degrade gracefully: until their migrations are applied, the app works as before and the
+feature simply doesn't show (reacting or editing then reports the server's error).
+
 ### End-to-end encryption
 
 Messages are encrypted on the device with NaCl `box` (X25519 + XSalsa20-Poly1305, via `tweetnacl`).

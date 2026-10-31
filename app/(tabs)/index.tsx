@@ -160,13 +160,21 @@ export default function ChatsScreen() {
                 </Text>
               </View>
               <View style={styles.rowBottom}>
-                <Text style={styles.rowPreview} numberOfLines={1}>
-                  {item.preview === null
-                    ? 'No messages yet'
-                    : theme.privacy?.maskMessages
-                      ? maskText(item.preview)
-                      : item.preview}
-                </Text>
+                {item.draft ? (
+                  // Your unsent draft takes the preview's place, like WhatsApp.
+                  <Text style={styles.rowPreview} numberOfLines={1}>
+                    <Text style={styles.rowDraft}>Draft: </Text>
+                    {theme.privacy?.maskMessages ? maskText(item.draft) : item.draft}
+                  </Text>
+                ) : (
+                  <Text style={styles.rowPreview} numberOfLines={1}>
+                    {item.preview === null
+                      ? 'No messages yet'
+                      : theme.privacy?.maskMessages
+                        ? maskText(item.preview)
+                        : item.preview}
+                  </Text>
+                )}
                 {unread > 0 && (
                   <View style={styles.badge} accessibilityLabel={`${unread} unread`}>
                     <Text style={styles.badgeText}>{unread > 99 ? '99+' : unread}</Text>
@@ -228,6 +236,7 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     rowTimeUnread: { color: colors.accent, fontWeight: '700' },
     rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
     rowPreview: { flex: 1, color: colors.textMuted },
+    rowDraft: { color: colors.accent, fontWeight: '600' },
     badge: {
       minWidth: 22,
       height: 22,

@@ -6,14 +6,17 @@ import { listConversations, type ConversationSummary } from '@/features/messagin
 import { openContent } from '@/features/messaging/crypto';
 import { useSession } from '@/hooks/use-session';
 import { getSharedKey } from '@/services/encryption/device-keys';
+import { loadDrafts, subscribeToDrafts } from '@/services/storage/encrypted-drafts';
 import { supabase } from '@/services/supabase/client';
 
 export type ConversationPreview = ConversationSummary & {
   // Decrypted last message; null when the conversation has no messages.
   preview: string | null;
+  // Unsent text saved on this phone, shown as "Draft: …" like WhatsApp.
+  draft: string | null;
 };
 
-async function withPreview(userId: string, row: ConversationSummary): Promise<ConversationPreview> {
+async function withPreview(userId: string, row: ConversationSummary): Promise<Omit<ConversationPreview, 'draft'>> {
   if (row.last_deleted) return { ...row, preview: '🔥 Message burned' };
   if (row.last_kind === 'image') return { ...row, preview: '📷 Photo' };
   if (row.last_body === null && row.last_ciphertext === null) return { ...row, preview: null };
@@ -37,7 +40,16 @@ export function useConversations() {
     if (!userId) return;
     try {
       const rows = await listConversations();
-      setConversations(await Promise.all(rows.map((row) => withPreview(userId, row))));
+      const [previews, drafts] = await Promise.all([
+        Promise.all(rows.map((row) => withPreview(userId, row))),
+        loadDrafts(
+          userId,
+          rows.map((row) => row.conversation_id),
+        ).catch(() => new Map<string, { text: string }>()),
+      ]);
+      setConversations(
+        previews.map((row) => ({ ...row, draft: drafts.get(row.conversation_id)?.text.trim() || null })),
+      );
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -54,6 +66,21 @@ export function useConversations() {
     useCallback(() => {
       reload();
     }, [reload]),
+  );
+
+  // A chat saves its draft as it closes, which can be just after the list
+  // has reloaded: take the change as it happens.
+  useEffect(
+    () =>
+      subscribeToDrafts((conversationId, draft) => {
+        const text = draft?.text.trim() || null;
+        setConversations((prev) =>
+          prev.some((c) => c.conversation_id === conversationId && c.draft !== text)
+            ? prev.map((c) => (c.conversation_id === conversationId ? { ...c, draft: text } : c))
+            : prev,
+        );
+      }),
+    [],
   );
 
   // Any new message the user can see (RLS-filtered) may change the list order

@@ -7,6 +7,7 @@ import {
   generateSecretKey,
   publicKeyFor,
 } from '@/services/encryption/box';
+import { clearDraftKeyCache, deleteAllDrafts } from '@/services/storage/encrypted-drafts';
 import { supabase } from '@/services/supabase/client';
 
 export type DeviceKeyPair = { publicKey: string; secretKey: Uint8Array };
@@ -40,10 +41,12 @@ export async function getSharedKey(userId: string, friendPublicKey: string) {
 }
 
 // Destroys the private key. Messages for this identity become unreadable.
+// Its encrypted drafts and their key go too.
 export async function deleteDeviceKeyPair(userId: string) {
   keyPairs.delete(userId);
   sharedKeys.clear();
   await SecureStore.deleteItemAsync(storageKey(userId));
+  await deleteAllDrafts(userId).catch((e: Error) => console.warn('Deleting drafts failed:', e.message));
 }
 
 // Forgets every key held in memory (the stored private key is untouched).
@@ -52,6 +55,7 @@ export function clearDeviceKeyCache() {
   keyPairs.clear();
   sharedKeys.forEach((key) => key.fill(0));
   sharedKeys.clear();
+  clearDraftKeyCache();
 }
 
 async function loadOrCreate(userId: string): Promise<DeviceKeyPair> {

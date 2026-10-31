@@ -7,6 +7,7 @@ import { useHeaderHeight } from 'expo-router/react-navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   BackHandler,
   FlatList,
   Keyboard,
@@ -31,12 +32,17 @@ import { pickImage, type PickedImage } from '@/features/burn-photo/pick-image';
 import { AttachmentPanel } from '@/features/messaging/attachment-panel';
 import { EmojiPanel } from '@/features/messaging/emoji-panel';
 import { MessageBubble } from '@/features/messaging/message-bubble';
+import { canEdit } from '@/features/messaging/edit';
 import { describeForQuote, quoteFor, type Quote } from '@/features/messaging/reply';
+import { TypingBubble } from '@/features/messaging/typing-bubble';
+import { useReactions, type ReactionChip } from '@/features/messaging/use-reactions';
+import { useTyping } from '@/features/messaging/use-typing';
 import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { heroFor } from '@/features/profile/heroes';
 import { useMessages, type DisplayMessage } from '@/features/messaging/use-messages';
 import { panicBottomPanel } from '@/features/security/panic-button';
 import { useSession } from '@/hooks/use-session';
+import { loadDraft, saveDraft, type Draft } from '@/services/storage/encrypted-drafts';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
 
@@ -59,6 +65,7 @@ export default function ChatScreen() {
     retry,
     discard,
     sendImage,
+    editMessage,
     deleteMessage,
     markViewed,
     settings,
@@ -85,6 +92,20 @@ export default function ChatScreen() {
   // Short confirmation shown in place of the encryption notice.
   const [toast, setToast] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  // Double-tapped message showing the reaction tray (a held message shows it too).
+  const [reactingId, setReactingId] = useState<string | null>(null);
+  // Message getting a reaction from the full emoji panel (the tray's +).
+  const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
+  // Own message being edited in the composer. The draft that was there is
+  // set aside and comes back afterwards.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const editing = editingId ? (byId.get(editingId) ?? null) : null;
+  const setAside = useRef<Draft | null>(null);
+  const storedIds = useMemo(() => messages.filter((m) => !m.sendState).map((m) => m.id), [messages]);
+  const { reactions, react } = useReactions(id, storedIds, sharedKey, myId);
+  const reactionsRef = useRef(reactions);
+  reactionsRef.current = reactions;
+  const { isPeerTyping, onDraftChange, stopTyping } = useTyping(id, myId);
   // iOS doesn't shrink a multiline input when its text is cleared, so after a
   // send the input is remounted (and refocused) to start again at one line.
   const [composerKey, setComposerKey] = useState(0);
@@ -199,13 +220,22 @@ export default function ChatScreen() {
     return () => subscription.remove();
   }, [emojiSpace]);
 
-  // Android back clears a selection, or closes the attach card or emoji panel,
-  // before leaving the chat.
+  // Android back clears a selection, closes the reaction tray or panel, the
+  // attach card or emoji panel, or stops editing, before leaving the chat.
   useEffect(() => {
-    if (!selectedId && !isAttachOpen && !isEmojiOpen) return;
+    if (!selectedId && !isAttachOpen && !isEmojiOpen && !reactingId && !reactionPickerId && !editingId) return;
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (selectedId) {
         setSelectedId(null);
+        return true;
+      }
+      if (reactionPickerId || reactingId) {
+        setReactionPickerId(null);
+        setReactingId(null);
+        return true;
+      }
+      if (editingId && !isEmojiOpen && !isAttachOpen) {
+        finishEditing();
         return true;
       }
       setIsAttachOpen(false);
@@ -232,19 +262,174 @@ export default function ChatScreen() {
     return () => clearTimeout(timer);
   }, [flashId]);
 
+  // Drafts survive leaving the chat and restarting the app, encrypted on this
+  // phone (src/services/storage/encrypted-drafts.ts). While a sent message is
+  // being edited, the draft set aside is what's kept.
+  const isDraftLoaded = useRef(false);
+  const draftToKeep = useRef<Draft | null>(null);
+  draftToKeep.current = editingId ? setAside.current : { text: draft, replyTo: replyToId };
+
+  useEffect(() => {
+    if (!myId) return;
+    let cancelled = false;
+    isDraftLoaded.current = false;
+    loadDraft(myId, id)
+      .then((saved) => {
+        if (cancelled || !saved) return;
+        // Anything typed while it loaded wins.
+        setDraft((current) => {
+          if (current) return current;
+          selection.current = { start: saved.text.length, end: saved.text.length };
+          return saved.text;
+        });
+        if (saved.replyTo) setReplyToId((current) => current ?? saved.replyTo ?? null);
+      })
+      .catch((e: Error) => console.warn('Loading draft failed:', e.message))
+      .finally(() => {
+        if (!cancelled) isDraftLoaded.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, myId]);
+
+  // Saved a moment after typing stops…
+  useEffect(() => {
+    if (!myId || !isDraftLoaded.current || editingId) return;
+    const value = { text: draft, replyTo: replyToId };
+    const timer = setTimeout(
+      () => saveDraft(myId, id, value).catch((e: Error) => console.warn('Saving draft failed:', e.message)),
+      400,
+    );
+    return () => clearTimeout(timer);
+  }, [draft, replyToId, editingId, id, myId]);
+
+  // …and right away on leaving the chat or the app. Only with the key already
+  // in memory: after the panic button wiped it, it isn't read back.
+  useEffect(() => {
+    if (!myId) return;
+    const flush = () => {
+      if (!isDraftLoaded.current) return;
+      saveDraft(myId, id, draftToKeep.current, { onlyIfKeyInMemory: true }).catch((e: Error) =>
+        console.warn('Saving draft failed:', e.message),
+      );
+    };
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') flush();
+    });
+    return () => {
+      subscription.remove();
+      flush();
+    };
+  }, [id, myId]);
+
+  // A message being edited that burns or is deleted can't be edited.
+  useEffect(() => {
+    if (editingId && (!editing || editing.isDeleted || editing.isExpired)) finishEditing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId, editing]);
+
+  // The tray goes when its message does.
+  useEffect(() => {
+    if (reactingId && !byId.get(reactingId)) setReactingId(null);
+  }, [reactingId, byId]);
+
   const select = useCallback((message: DisplayMessage) => {
     Haptics.selectionAsync().catch(() => {});
     setIsAttachOpen(false);
+    setReactingId(null);
     setSelectedId((current) => (current === message.id ? null : message.id));
   }, []);
 
   const startReply = useCallback((message: DisplayMessage) => {
     setSelectedId(null);
+    setReactingId(null);
     setReplyToId(message.id);
     inputRef.current?.focus();
   }, []);
 
-  const openImage = useCallback((message: DisplayMessage) => setViewingId(message.id), []);
+  const openImage = useCallback((message: DisplayMessage) => {
+    setReactingId(null);
+    setViewingId(message.id);
+  }, []);
+
+  // Double tap: the reaction tray, like WhatsApp.
+  const openReactions = useCallback((message: DisplayMessage) => {
+    setSelectedId(null);
+    setIsAttachOpen(false);
+    setReactingId(message.id);
+  }, []);
+
+  const closeReactions = useCallback(() => setReactingId(null), []);
+
+  const reactTo = useCallback(
+    (message: DisplayMessage, emoji: string | null) => {
+      setReactingId(null);
+      setSelectedId(null);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      react(message.id, emoji).catch((e: Error) => showError("Couldn't react", e));
+    },
+    [react],
+  );
+
+  const moreReactions = useCallback((message: DisplayMessage) => {
+    setReactingId(null);
+    setSelectedId(null);
+    Keyboard.dismiss();
+    setReactionPickerId(message.id);
+  }, []);
+
+  // Who reacted with what; yours can be taken back from here.
+  const showReactions = useCallback(
+    (message: DisplayMessage) => {
+      const list = reactionsRef.current.get(message.id) ?? [];
+      if (list.length === 0) return;
+      setReactingId(null);
+      showActionSheet(
+        list.map((r) =>
+          r.isMine
+            ? {
+                text: `You  ${r.emoji}  · Tap to remove`,
+                icon: 'close-circle-outline' as const,
+                style: 'destructive' as const,
+                onPress: () => reactTo(message, null),
+              }
+            : { text: `${friendName}  ${r.emoji}`, icon: 'person-outline' as const, onPress: () => {} },
+        ),
+        'Reactions',
+      );
+    },
+    [friendName, reactTo],
+  );
+
+  // Put the selected message of yours in the composer to change it.
+  function startEditing() {
+    const message = selected;
+    if (!message || !canEdit(message, myId)) return;
+    stopTyping();
+    if (!editingId) setAside.current = { text: draft, replyTo: replyToId };
+    setSelectedId(null);
+    setReactingId(null);
+    setIsAttachOpen(false);
+    setReplyToId(null);
+    setEditingId(message.id);
+    const text = message.text ?? '';
+    setDraft(text);
+    selection.current = { start: text.length, end: text.length };
+    if (!isEmojiOpen) inputRef.current?.focus();
+  }
+
+  // Leaves editing and brings back the draft that was set aside.
+  function finishEditing() {
+    const saved = setAside.current;
+    setAside.current = null;
+    setEditingId(null);
+    const text = saved?.text ?? '';
+    setDraft(text);
+    selection.current = { start: text.length, end: text.length };
+    setReplyToId(saved?.replyTo ?? null);
+    setComposerKey((k) => k + 1);
+  }
 
   const offerRetry = useCallback(
     (message: DisplayMessage) =>
@@ -318,6 +503,8 @@ export default function ChatScreen() {
   function insertEmoji(emoji: string) {
     const { start, end } = selection.current;
     setDraft((current) => current.slice(0, start) + emoji + current.slice(end));
+    // The text now has at least this emoji in it.
+    if (!editingId) onDraftChange(emoji);
     selection.current = { start: start + emoji.length, end: start + emoji.length };
   }
 
@@ -351,6 +538,20 @@ export default function ChatScreen() {
     const body = draft.trim();
     if (!body) return;
 
+    if (editing) {
+      const target = editing;
+      finishEditing();
+      if (body === target.text) return;
+      if (!canEdit(target, myId)) {
+        showAlert("Can't edit this message", 'Messages can only be edited for 5 minutes after sending.', undefined, {
+          icon: 'time-outline',
+        });
+        return;
+      }
+      editMessage(target.id, body).catch((e: Error) => showError("Couldn't edit message", e));
+      return;
+    }
+
     // The message shows at once (🕓) and the composer clears; if sending fails
     // it stays in the chat as "Not sent", to retry or delete.
     const replyingTo = replyTo && !replyTo.isDeleted && !replyTo.isExpired ? replyTo.id : undefined;
@@ -360,6 +561,7 @@ export default function ChatScreen() {
       showError('Message not sent', e);
       return;
     }
+    stopTyping();
     setDraft('');
     setReplyToId(null);
     setComposerKey((k) => k + 1);
@@ -407,6 +609,16 @@ export default function ChatScreen() {
                         <Ionicons name="copy-outline" size={22} color={theme.colors.text} />
                       </Pressable>
                     )}
+                    {canEdit(selected, myId) && (
+                      <Pressable
+                        onPress={startEditing}
+                        style={styles.headerAction}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Edit">
+                        <Ionicons name="create-outline" size={22} color={theme.colors.text} />
+                      </Pressable>
+                    )}
                     {selected.sender_id === myId && (
                       <Pressable
                         onPress={deleteSelected}
@@ -432,7 +644,10 @@ export default function ChatScreen() {
                     accessibilityRole="button"
                     accessibilityHint="Opens burn settings">
                     <HeroAvatar hero={heroFor(peer?.friend_avatar, peer?.friend_code ?? code)} size={30} />
-                    <Text style={styles.headerCode}>{peer?.friend_code ?? code ?? 'Chat'}</Text>
+                    <View>
+                      <Text style={styles.headerCode}>{peer?.friend_code ?? code ?? 'Chat'}</Text>
+                      {isPeerTyping && <Text style={styles.headerTyping}>typing…</Text>}
+                    </View>
                   </Pressable>
                 ),
                 headerRight: () => (
@@ -473,6 +688,7 @@ export default function ChatScreen() {
           contentInsetAdjustmentBehavior="never"
           keyboardDismissMode="interactive"
           onScroll={onScroll}
+          onScrollBeginDrag={closeReactions}
           scrollEventThrottle={32}
           onContentSizeChange={followIfAtBottom}
           onLayout={followIfAtBottom}
@@ -481,6 +697,7 @@ export default function ChatScreen() {
           onStartReachedThreshold={0.5}
           maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
           ListHeaderComponent={isLoadingOlder ? <ActivityIndicator style={styles.loadingOlder} /> : undefined}
+          ListFooterComponent={isPeerTyping ? <TypingBubble /> : undefined}
           initialNumToRender={30}
           windowSize={11}
           // Rows vary in height, so a far jump can miss: land near it, then retry.
@@ -488,7 +705,7 @@ export default function ChatScreen() {
             listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
             setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.5 }), 100);
           }}
-          extraData={[selectedId, flashId, quotes]}
+          extraData={[selectedId, flashId, quotes, reactingId, reactions]}
           renderItem={({ item }) =>
             item.type === 'day' ? (
               <View style={styles.dayRow}>
@@ -507,6 +724,13 @@ export default function ChatScreen() {
                 onReply={startReply}
                 onQuotePress={jumpTo}
                 onFailedPress={offerRetry}
+                reactions={reactions.get(item.message.id) ?? NO_REACTIONS}
+                isReacting={item.message.id === reactingId || item.message.id === selectedId}
+                onOpenReactions={openReactions}
+                onReact={reactTo}
+                onMoreReactions={moreReactions}
+                onReactionsPress={showReactions}
+                onTap={closeReactions}
               />
             )
           }
@@ -550,7 +774,27 @@ export default function ChatScreen() {
           </Pressable>
         )}
         <Animated.View style={[styles.composer, composerPadding]}>
-          {replyTo && (
+          {editing && (
+            <View style={styles.replyBar}>
+              <Ionicons name="create-outline" size={18} color={theme.colors.tint} />
+              <View style={styles.replyBarText}>
+                <Text style={styles.replyAuthor} numberOfLines={1}>
+                  Edit message
+                </Text>
+                <Text style={styles.replySnippet} numberOfLines={1}>
+                  {describeForQuote(editing, mask)}
+                </Text>
+              </View>
+              <Pressable
+                onPress={finishEditing}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel editing">
+                <Ionicons name="close" size={20} color={theme.colors.textMuted} />
+              </Pressable>
+            </View>
+          )}
+          {replyTo && !editing && (
             <View style={styles.replyBar}>
               <View style={styles.replyBarText}>
                 <Text style={styles.replyAuthor} numberOfLines={1}>
@@ -599,20 +843,30 @@ export default function ChatScreen() {
                 onChangeText={(text) => {
                   setDraft(text);
                   selection.current = { start: text.length, end: text.length };
+                  if (!editingId) onDraftChange(text);
                 }}
                 onSelectionChange={(e) => (selection.current = e.nativeEvent.selection)}
-                onFocus={() => setIsAttachOpen(false)}
+                onFocus={() => {
+                  setIsAttachOpen(false);
+                  setReactingId(null);
+                }}
+                onBlur={stopTyping}
               />
-              <Pressable
-                style={[styles.pillButton, !isReady && styles.sendDisabled]}
-                disabled={!isReady}
-                onPress={() => setIsAttachOpen((open) => !open)}
-                hitSlop={4}
-                accessibilityRole="button"
-                accessibilityLabel="Attach">
-                <MaterialCommunityIcons name="paperclip" size={23} color={theme.colors.textMuted} />
-              </Pressable>
-              {!draft && (
+              {!editing && (
+                <Pressable
+                  style={[styles.pillButton, !isReady && styles.sendDisabled]}
+                  disabled={!isReady}
+                  onPress={() => {
+                    setReactingId(null);
+                    setIsAttachOpen((open) => !open);
+                  }}
+                  hitSlop={4}
+                  accessibilityRole="button"
+                  accessibilityLabel="Attach">
+                  <MaterialCommunityIcons name="paperclip" size={23} color={theme.colors.textMuted} />
+                </Pressable>
+              )}
+              {!draft && !editing && (
                 <Pressable
                   style={[styles.pillButton, !isReady && styles.sendDisabled]}
                   disabled={!isReady}
@@ -629,8 +883,12 @@ export default function ChatScreen() {
               disabled={!draft.trim() || !isReady}
               onPress={submit}
               accessibilityRole="button"
-              accessibilityLabel="Send">
-              <Ionicons name="send" size={20} color={theme.colors.onAccent} style={styles.sendIcon} />
+              accessibilityLabel={editing ? 'Save edit' : 'Send'}>
+              {editing ? (
+                <Ionicons name="checkmark" size={24} color={theme.colors.onAccent} />
+              ) : (
+                <Ionicons name="send" size={20} color={theme.colors.onAccent} style={styles.sendIcon} />
+              )}
             </Pressable>
           </View>
         </Animated.View>
@@ -640,6 +898,28 @@ export default function ChatScreen() {
         <Animated.View style={[styles.emojiSlot, emojiSlide]}>
           <EmojiPanel height={emojiHeight} bottomInset={insets.bottom} onEmoji={insertEmoji} />
         </Animated.View>
+      )}
+
+      {reactionPickerId && (
+        <>
+          <Pressable
+            style={styles.pickerBackdrop}
+            onPress={() => setReactionPickerId(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Close reactions"
+          />
+          <View style={styles.emojiSlot}>
+            <EmojiPanel
+              height={REACTION_PANEL_HEIGHT}
+              bottomInset={insets.bottom}
+              onEmoji={(emoji) => {
+                const message = byId.get(reactionPickerId);
+                setReactionPickerId(null);
+                if (message) reactTo(message, emoji);
+              }}
+            />
+          </View>
+        </>
       )}
 
       {pickedImage && (
@@ -665,6 +945,9 @@ const createStyles = ({ colors }: AppTheme) =>
     timerButton: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8 },
     timerLabel: { color: '#ff7a1a', fontSize: 13, fontWeight: '700' },
     headerCode: { color: colors.text, fontSize: 17, fontWeight: '600' },
+    headerTyping: { color: colors.tint, fontSize: 12, fontStyle: 'italic' },
+    // Dims the chat behind the reaction emoji panel; tapping it closes the panel.
+    pickerBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.25)' },
     notice: { color: colors.textMuted, fontSize: 12, textAlign: 'center', paddingVertical: 6 },
     error: { color: colors.danger },
     // Rows pad themselves, so a selected row's tint reaches both edges.
@@ -779,6 +1062,10 @@ const createStyles = ({ colors }: AppTheme) =>
     // In the screen's bottom padding, which is the emoji panel's height while it is open.
     emojiSlot: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   });
+
+// Shared empty list, so rows without reactions keep a stable prop.
+const NO_REACTIONS: readonly ReactionChip[] = [];
+const REACTION_PANEL_HEIGHT = 320;
 
 type Row = { type: 'day'; key: string; label: string } | { type: 'message'; key: string; message: DisplayMessage };
 

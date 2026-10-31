@@ -5,9 +5,11 @@ import { BURN_ANIMATION_MS, burnsAt } from '@/features/burn-mode/timer';
 import {
   burnExpiredMessages,
   deleteMessage as deleteMessageRpc,
+  editMessage as editMessageRpc,
   eraseConversation,
   getConversation,
   getConversationSettings,
+  getMessage,
   listMessages,
   markConversationRead,
   markMessageViewed,
@@ -169,16 +171,23 @@ export function useMessages(conversationId: string) {
     const filter = `conversation_id=eq.${conversationId}`;
     const insert = (payload: { new: object }) =>
       setMessages((prev) => merge([payload.new as Message], prev));
-    // Only take the columns an UPDATE can change: receipts, view-once and
-    // deletion. Postgres leaves unchanged TOASTed (large) values out of the
-    // change feed, so a long message's ciphertext arrives missing and must
-    // not overwrite what we have.
+    // Only take the columns an UPDATE can change: receipts, view-once,
+    // deletion and edits. Postgres leaves unchanged TOASTed (large) values out
+    // of the change feed, so a long message's ciphertext arrives missing and
+    // must not overwrite what we have.
     const applyUpdate = (payload: { new: object }) => {
       const update = payload.new as Message;
       if (update.deleted_at || update.viewed_at) forgetImage(update.id);
       setMessages((prev) =>
         prev.map((m) => (m.id === update.id ? withUpdate(m, update) : m)),
       );
+      // An edit whose new text didn't come with the change: fetch it.
+      const known = messagesRef.current.find((m) => m.id === update.id);
+      if (known && isNewerEdit(update, known) && !(update.ciphertext && update.nonce)) {
+        getMessage(update.id)
+          .then((fresh) => fresh && setMessages((prev) => merge([fresh], prev)))
+          .catch((e: Error) => console.warn('Loading edited message failed:', e.message));
+      }
     };
 
     // INSERT: new messages. UPDATE: receipts, opened view-once photos, deletions.
@@ -322,6 +331,7 @@ export function useMessages(conversationId: string) {
         burn_seconds: null,
         burn_mode: null,
         reply_to: p.replyTo ?? null,
+        edited_at: null,
         text: p.text,
         image: null,
         isEncrypted: true,
@@ -422,6 +432,37 @@ export function useMessages(conversationId: string) {
     [conversationId, sharedKey],
   );
 
+  // Edits one of your text messages (within 5 minutes of sending). The new
+  // text shows at once and is put back if the server refuses.
+  const editMessage = useCallback(
+    async (messageId: string, text: string) => {
+      if (!sharedKey) throw new Error('Encryption is not ready for this chat yet.');
+      const original = messagesRef.current.find((m) => m.id === messageId);
+      if (!original) throw new Error('Message not found');
+      const encrypted = encrypt(text, sharedKey);
+      const edited: Message = { ...original, ...encrypted, edited_at: new Date().toISOString() };
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? edited : m)));
+      try {
+        const editedAt = await editMessageRpc(messageId, encrypted);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId && m.ciphertext === encrypted.ciphertext ? { ...m, edited_at: editedAt } : m,
+          ),
+        );
+      } catch (e) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId && m.ciphertext === encrypted.ciphertext
+              ? { ...m, ciphertext: original.ciphertext, nonce: original.nonce, edited_at: original.edited_at }
+              : m,
+          ),
+        );
+        throw e;
+      }
+    },
+    [sharedKey],
+  );
+
   // Delete for everyone. The server wipes the content; the encrypted photo
   // file (if any) is removed from Storage afterwards.
   const deleteMessage = useCallback(async (message: Message) => {
@@ -480,6 +521,7 @@ export function useMessages(conversationId: string) {
     retry,
     discard,
     sendImage,
+    editMessage,
     deleteMessage,
     markViewed,
     settings,
@@ -497,6 +539,13 @@ function withUpdate(message: Message, update: Message): Message {
     deleted_at: update.deleted_at,
   };
   if (update.viewed_at) next.attachment_path = null;
+  // Edited: take the new text when the change carries it (otherwise the
+  // caller fetches the message).
+  if (isNewerEdit(update, message) && update.ciphertext && update.nonce) {
+    next.ciphertext = update.ciphertext;
+    next.nonce = update.nonce;
+    next.edited_at = update.edited_at;
+  }
   if (update.deleted_at) {
     next.body = null;
     next.ciphertext = null;
@@ -504,4 +553,12 @@ function withUpdate(message: Message, update: Message): Message {
     next.attachment_path = null;
   }
   return next;
+}
+
+// The update carries a later edit than the one we have. Missing edited_at
+// (before the message-edits migration) never counts.
+function isNewerEdit(update: Message, message: Message) {
+  if (!update.edited_at) return false;
+  if (!message.edited_at) return true;
+  return Date.parse(update.edited_at) > Date.parse(message.edited_at);
 }

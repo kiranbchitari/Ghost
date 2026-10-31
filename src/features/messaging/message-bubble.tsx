@@ -3,7 +3,7 @@ import * as Haptics from 'expo-haptics';
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
-import Animated, { interpolate, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { FadeIn, interpolate, useAnimatedStyle, useSharedValue, withTiming, ZoomIn } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { formatBurn } from '@/features/burn-mode/timer';
@@ -11,6 +11,7 @@ import { BurnEffect } from '@/features/burn-photo/burn-effect';
 import { useDecryptedImage } from '@/features/messaging/attachments';
 import { maskText } from '@/features/messaging/mask';
 import type { Quote } from '@/features/messaging/reply';
+import { QUICK_REACTIONS, type ReactionChip } from '@/features/messaging/use-reactions';
 import type { DisplayMessage } from '@/features/messaging/use-messages';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
@@ -30,12 +31,28 @@ type Props = {
   onQuotePress: (messageId: string) => void;
   // A message of yours that failed to send was tapped.
   onFailedPress: (message: DisplayMessage) => void;
+  // Everyone's reactions to this message (undefined or empty for none).
+  reactions?: readonly ReactionChip[];
+  // The reaction tray is open above this message.
+  isReacting?: boolean;
+  // Double tap: open the reaction tray.
+  onOpenReactions?: (message: DisplayMessage) => void;
+  // An emoji was picked in the tray; null takes your reaction back.
+  onReact?: (message: DisplayMessage, emoji: string | null) => void;
+  // The tray's + button: pick any emoji.
+  onMoreReactions?: (message: DisplayMessage) => void;
+  // The reactions under the bubble were tapped.
+  onReactionsPress?: (message: DisplayMessage) => void;
+  // Any single tap on the bubble (closes an open tray).
+  onTap?: () => void;
 };
 
 const IMAGE_WIDTH = 230;
 const IMAGE_MAX_HEIGHT = 300;
 // How far to swipe right before letting go replies.
 const REPLY_DISTANCE = 64;
+// Two taps closer together than this are a double tap (react).
+const DOUBLE_TAP_MS = 280;
 
 // Memoised: in a long chat only rows whose props change re-render, so pass
 // stable callbacks.
@@ -51,8 +68,16 @@ export const MessageBubble = memo(function MessageBubble({
   onReply,
   onQuotePress,
   onFailedPress,
+  reactions,
+  isReacting = false,
+  onOpenReactions,
+  onReact,
+  onMoreReactions,
+  onReactionsPress,
+  onTap,
 }: Props) {
   const styles = useThemedStyles(createStyles);
+  const { theme } = useAppTheme();
 
   // When a message is deleted, or a view-once photo is opened, keep showing
   // its previous state long enough to burn it away.
@@ -72,11 +97,23 @@ export const MessageBubble = memo(function MessageBubble({
   // Expired by a timer or an erase: after burning, nothing is left behind.
   if (!burning && !aboutToBurn && message.isExpired) return null;
 
-  // Unsent messages have nothing on the server yet to reply to.
+  // Unsent messages have nothing on the server yet to reply to (or react to).
   const isLive = !burning && !aboutToBurn && !message.isDeleted && !message.sendState;
+  const canReact = isLive && !message.isExpired && !!onReact;
+  const myReaction = reactions?.find((r) => r.isMine)?.emoji ?? null;
 
   return (
     <SwipeToReply enabled={isLive} onReply={() => onReply(message)} styles={styles}>
+      {isReacting && canReact && (
+        <View style={[styles.trayRow, isMine ? styles.rowMine : styles.rowTheirs]}>
+          <ReactionTray
+            mine={myReaction}
+            onPick={(emoji) => onReact(message, emoji === myReaction ? null : emoji)}
+            onMore={onMoreReactions ? () => onMoreReactions(message) : undefined}
+            styles={styles}
+          />
+        </View>
+      )}
       <View style={[styles.row, isMine ? styles.rowMine : styles.rowTheirs, isSelected && styles.rowSelected]}>
         {burning ? (
           // The wrapper takes the bubble's max width so the text wraps exactly as
@@ -98,12 +135,111 @@ export const MessageBubble = memo(function MessageBubble({
             onSelect={onSelect}
             onQuotePress={onQuotePress}
             onFailedPress={onFailedPress}
+            onDoubleTap={canReact && onOpenReactions ? () => onOpenReactions(message) : undefined}
+            onTap={onTap}
           />
         )}
       </View>
+      {canReact && reactions && reactions.length > 0 && (
+        <ReactionChips
+          reactions={reactions}
+          isMine={isMine}
+          isMasked={!!theme.privacy?.maskMessages}
+          onPress={onReactionsPress ? () => onReactionsPress(message) : undefined}
+          styles={styles}
+        />
+      )}
     </SwipeToReply>
   );
 });
+
+// WhatsApp's reaction tray: the quick emoji, plus + for any other. Your
+// current reaction is highlighted; picking it again takes it back.
+function ReactionTray({
+  mine,
+  onPick,
+  onMore,
+  styles,
+}: {
+  mine: string | null;
+  onPick: (emoji: string) => void;
+  onMore?: () => void;
+  styles: Styles;
+}) {
+  const { theme } = useAppTheme();
+  return (
+    <Animated.View entering={ZoomIn.duration(160)} style={styles.tray}>
+      {QUICK_REACTIONS.map((emoji) => (
+        <Pressable
+          key={emoji}
+          onPress={() => onPick(emoji)}
+          style={({ pressed }) => [styles.trayItem, (emoji === mine || pressed) && styles.trayItemActive]}
+          hitSlop={4}
+          accessibilityRole="button"
+          accessibilityLabel={emoji === mine ? `Remove reaction ${emoji}` : `React with ${emoji}`}
+          accessibilityState={{ selected: emoji === mine }}>
+          <Text style={styles.trayEmoji}>{emoji}</Text>
+        </Pressable>
+      ))}
+      {/* A reaction picked from the full panel shows here too, highlighted. */}
+      {mine && !QUICK_REACTIONS.includes(mine) && (
+        <Pressable
+          onPress={() => onPick(mine)}
+          style={[styles.trayItem, styles.trayItemActive]}
+          hitSlop={4}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove reaction ${mine}`}
+          accessibilityState={{ selected: true }}>
+          <Text style={styles.trayEmoji}>{mine}</Text>
+        </Pressable>
+      )}
+      {onMore && (
+        <Pressable
+          onPress={onMore}
+          style={styles.trayMore}
+          hitSlop={4}
+          accessibilityRole="button"
+          accessibilityLabel="More reactions">
+          <Ionicons name="add" size={22} color={theme.colors.textMuted} />
+        </Pressable>
+      )}
+    </Animated.View>
+  );
+}
+
+// The reactions pill under a bubble: each distinct emoji, and how many when
+// there's more than one. Stealth masks the emoji like it masks text.
+function ReactionChips({
+  reactions,
+  isMine,
+  isMasked,
+  onPress,
+  styles,
+}: {
+  reactions: readonly ReactionChip[];
+  isMine: boolean;
+  isMasked: boolean;
+  onPress?: () => void;
+  styles: Styles;
+}) {
+  const emojis = [...new Set(reactions.map((r) => r.emoji))];
+  const label = reactions.map((r) => `${r.isMine ? 'You' : 'They'} reacted ${r.emoji}`).join(', ');
+  return (
+    <View style={[styles.chipsRow, isMine ? styles.rowMine : styles.rowTheirs]}>
+      <Animated.View entering={FadeIn.duration(150)}>
+        <Pressable
+          onPress={onPress}
+          style={styles.chips}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={label}>
+          <Text style={styles.chipEmoji}>{isMasked ? emojis.map(() => '•').join(' ') : emojis.join('')}</Text>
+          {reactions.length > 1 && <Text style={styles.chipCount}>{reactions.length}</Text>}
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
+}
 
 // WhatsApp's swipe to reply: drag a message right until the reply arrow fills
 // in (with a tick of haptics), then let go. Vertical drags still scroll.
@@ -186,6 +322,9 @@ type BubbleProps = {
   onSelect?: (message: DisplayMessage) => void;
   onQuotePress?: (messageId: string) => void;
   onFailedPress?: (message: DisplayMessage) => void;
+  // Set when the message can be reacted to.
+  onDoubleTap?: () => void;
+  onTap?: () => void;
   fill?: boolean;
 };
 
@@ -200,9 +339,14 @@ function Bubble({
   onSelect,
   onQuotePress,
   onFailedPress,
+  onDoubleTap,
+  onTap,
   fill,
 }: BubbleProps) {
   const { theme } = useAppTheme();
+  const lastTapAt = useRef(0);
+  const pendingTap = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(pendingTap.current), []);
   // Stealth: content stays masked until the bubble is pressed and held.
   const [isRevealed, setIsRevealed] = useState(false);
   const isMasked = !!theme.privacy?.maskMessages && !isRevealed;
@@ -214,7 +358,8 @@ function Bubble({
   const canOpen = isPlainPhoto || (isViewOnceUnopened && !isMine);
 
   const time = new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const meta = message.isEncrypted || message.isDeleted ? time : `Unencrypted · ${time}`;
+  const stamp = message.edited_at && !message.isDeleted ? `Edited ${time}` : time;
+  const meta = message.isEncrypted || message.isDeleted ? stamp : `Unencrypted · ${stamp}`;
   const metaStyle = isMine ? styles.metaMine : styles.metaTheirs;
   const textStyle = [
     isMine ? styles.textMine : styles.textTheirs,
@@ -249,7 +394,7 @@ function Bubble({
   }
 
   const canSelect = !message.isDeleted && !message.sendState && !!onSelect;
-  const onPress =
+  const action =
     message.sendState === 'failed' && onFailedPress
       ? () => onFailedPress(message)
       : isSelecting
@@ -260,6 +405,28 @@ function Bubble({
           ? () => onOpenImage(message)
           : undefined;
 
+  // Double tap reacts, like WhatsApp. A single tap's own action (opening a
+  // photo) waits a moment, in case a second tap follows.
+  const canDoubleTap = !!onDoubleTap && !isSelecting;
+  const onPress = canDoubleTap
+    ? () => {
+        const now = Date.now();
+        if (now - lastTapAt.current < DOUBLE_TAP_MS) {
+          lastTapAt.current = 0;
+          clearTimeout(pendingTap.current);
+          Haptics.selectionAsync().catch(() => {});
+          onDoubleTap();
+          return;
+        }
+        lastTapAt.current = now;
+        onTap?.();
+        if (action) {
+          clearTimeout(pendingTap.current);
+          pendingTap.current = setTimeout(action, DOUBLE_TAP_MS);
+        }
+      }
+    : action;
+
   return (
     <Pressable
       onPress={onPress}
@@ -268,6 +435,10 @@ function Bubble({
       // Like WhatsApp on Android: hold to select, then act from the header.
       onLongPress={canSelect ? () => onSelect(message) : undefined}
       delayLongPress={350}
+      accessibilityActions={canDoubleTap ? [{ name: 'react', label: 'React' }] : undefined}
+      onAccessibilityAction={
+        canDoubleTap ? (e) => e.nativeEvent.actionName === 'react' && onDoubleTap() : undefined
+      }
       style={[
         styles.bubble,
         isMine ? styles.bubbleMine : styles.bubbleTheirs,
@@ -403,6 +574,51 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     quoteText: { fontSize: 13 },
     rowMine: { justifyContent: 'flex-end' },
     rowTheirs: { justifyContent: 'flex-start' },
+    // Above the bubble, on its side, while picking a reaction.
+    trayRow: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 4 },
+    tray: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 2,
+      paddingHorizontal: 6,
+      paddingVertical: 4,
+      borderRadius: 24,
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      shadowColor: '#000',
+      shadowOpacity: 0.18,
+      shadowRadius: 8,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 4,
+    },
+    trayItem: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+    trayItemActive: { backgroundColor: `${colors.tint}33` },
+    trayEmoji: { fontSize: 24 },
+    trayMore: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      marginLeft: 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.input,
+    },
+    // Overlaps the bottom edge of the bubble, like WhatsApp.
+    chipsRow: { flexDirection: 'row', paddingHorizontal: 22, marginTop: -8, marginBottom: 3 },
+    chips: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 12,
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    chipEmoji: { fontSize: 14, color: colors.textMuted },
+    chipCount: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
     bubble: {
       maxWidth: '78%',
       borderRadius: 16,
