@@ -12,7 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
-import type { AppTheme } from '@/theme/themes';
+import { bubbleTail, chatShadow, type AppTheme } from '@/theme/themes';
 
 // Three bouncing dots in the other person's bubble while they type.
 export function TypingBubble() {
@@ -66,11 +66,7 @@ const createStyles = ({ colors, chat }: AppTheme) =>
         ? {
             borderRadius: chat.bubbleRadius,
             borderTopLeftRadius: chat.tails ? 0 : chat.bubbleRadius,
-            shadowColor: chat.shadow,
-            shadowOpacity: 1,
-            shadowRadius: 0.5,
-            shadowOffset: { width: 0, height: 1 },
-            elevation: 1,
+            ...chatShadow(chat),
           }
         : {
             borderRadius: 16,
@@ -79,16 +75,6 @@ const createStyles = ({ colors, chat }: AppTheme) =>
             borderColor: colors.bubbleTheirsBorder,
           }),
     },
-    tail: {
-      position: 'absolute',
-      top: 0,
-      left: -8,
-      width: 0,
-      height: 0,
-      borderTopWidth: 13,
-      borderTopColor: colors.bubbleTheirs,
-      borderLeftWidth: 8,
-      borderLeftColor: 'transparent',
-    },
+    tail: bubbleTail('left', colors.bubbleTheirs),
     dot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: colors.metaTheirs },
   });

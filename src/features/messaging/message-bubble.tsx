@@ -24,7 +24,7 @@ import type { Quote } from '@/features/messaging/reply';
 import { QUICK_REACTIONS, type ReactionChip } from '@/features/messaging/use-reactions';
 import type { DisplayMessage } from '@/features/messaging/use-messages';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
-import type { AppTheme } from '@/theme/themes';
+import { bubbleTail, chatShadow, type AppTheme } from '@/theme/themes';
 
 type Props = {
   message: DisplayMessage;
@@ -245,18 +245,25 @@ function ReactionChips({
   onPress?: () => void;
   styles: Styles;
 }) {
+  // Stealth: masked until pressed and held, like message text.
+  const [isRevealed, setIsRevealed] = useState(false);
+  const hide = isMasked && !isRevealed;
   const emojis = [...new Set(reactions.map((r) => r.emoji))];
-  const label = reactions.map((r) => `${r.isMine ? 'You' : 'They'} reacted ${r.emoji}`).join(', ');
+  const label = hide
+    ? `${reactions.length} reactions`
+    : reactions.map((r) => `${r.isMine ? 'You' : 'They'} reacted ${r.emoji}`).join(', ');
   return (
     <View style={[styles.chipsRow, isMine ? styles.rowMine : styles.rowTheirs]}>
       <Animated.View entering={FadeIn.duration(150)}>
         <Pressable
           onPress={onPress}
+          onPressIn={isMasked ? () => setIsRevealed(true) : undefined}
+          onPressOut={isMasked ? () => setIsRevealed(false) : undefined}
           style={styles.chips}
           hitSlop={6}
           accessibilityRole="button"
           accessibilityLabel={label}>
-          <Text style={styles.chipEmoji}>{isMasked ? emojis.map(() => '•').join(' ') : emojis.join('')}</Text>
+          <Text style={styles.chipEmoji}>{hide ? emojis.map(() => '•').join(' ') : emojis.join('')}</Text>
           {reactions.length > 1 && <Text style={styles.chipCount}>{reactions.length}</Text>}
         </Pressable>
       </Animated.View>
@@ -637,20 +644,8 @@ function Ticks({ message, styles, onPhoto = false }: { message: DisplayMessage; 
 
 type Styles = ReturnType<typeof createStyles>;
 
-// WhatsApp-style tail: a small triangle continuing the bubble's top edge
-// outwards, its long side slanting back to the bubble.
-const TAIL_WIDTH = 8;
-const TAIL_HEIGHT = 13;
-
 const createStyles = ({ colors, glow, chat }: AppTheme) => {
-  // Hairline shadow for bubbles and chips in themes that use one.
-  const shadow = chat && {
-    shadowColor: chat.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 0.5,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
-  };
+  const shadow = chatShadow(chat);
   const radius = chat?.bubbleRadius ?? 16;
   return StyleSheet.create({
     // With tails, a run from one person is packed tight and runs are spaced.
@@ -749,28 +744,8 @@ const createStyles = ({ colors, glow, chat }: AppTheme) => {
     // The corner the tail grows from is square.
     bubbleTailMine: { borderTopRightRadius: 0 },
     bubbleTailTheirs: { borderTopLeftRadius: 0 },
-    tailMine: {
-      position: 'absolute',
-      top: 0,
-      right: -TAIL_WIDTH,
-      width: 0,
-      height: 0,
-      borderTopWidth: TAIL_HEIGHT,
-      borderTopColor: colors.bubbleMine,
-      borderRightWidth: TAIL_WIDTH,
-      borderRightColor: 'transparent',
-    },
-    tailTheirs: {
-      position: 'absolute',
-      top: 0,
-      left: -TAIL_WIDTH,
-      width: 0,
-      height: 0,
-      borderTopWidth: TAIL_HEIGHT,
-      borderTopColor: colors.bubbleTheirs,
-      borderLeftWidth: TAIL_WIDTH,
-      borderLeftColor: 'transparent',
-    },
+    tailMine: bubbleTail('right', colors.bubbleMine),
+    tailTheirs: bubbleTail('left', colors.bubbleTheirs),
     bubblePhoto: chat ? { padding: 3, paddingBottom: 3 } : { padding: 4, paddingBottom: 6 },
     burnWrapper: { maxWidth: '78%' },
     bubbleFill: { maxWidth: '100%' },

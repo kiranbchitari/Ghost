@@ -25,6 +25,10 @@ let cached: { userId: string; key: Uint8Array } | null = null;
 let generation = 0;
 // Key loads run one at a time, so two first saves can't each create a key.
 let keyLock: Promise<unknown> = Promise.resolve();
+// Identities whose drafts were destroyed. Nothing is loaded, created or saved
+// for them again, so a save that starts mid-wipe can't bring a key back.
+// (Wiping always comes with a new identity, so this never needs clearing.)
+const wiped = new Set<string>();
 
 async function readKey(userId: string, create: boolean) {
   const stored = await SecureStore.getItemAsync(keyName(userId));
@@ -38,11 +42,13 @@ async function readKey(userId: string, create: boolean) {
 }
 
 function getKey(userId: string, create: boolean): Promise<Uint8Array | null> {
+  if (wiped.has(userId)) return Promise.resolve(null);
   if (cached?.userId === userId) return Promise.resolve(cached.key);
   const startedAt = generation;
   const run = keyLock
     .catch(() => {})
     .then(async () => {
+      if (wiped.has(userId)) return null;
       if (cached?.userId === userId) return cached.key;
       const key = await readKey(userId, create);
       if (key && generation === startedAt) cached = { userId, key };
@@ -126,6 +132,7 @@ export function saveDraft(
   const name = itemName(userId, conversationId);
   const isEmpty = !draft || (!draft.text.trim() && !draft.replyTo);
   return enqueue(name, async () => {
+    if (wiped.has(userId)) return;
     if (isEmpty) {
       await AsyncStorage.removeItem(name);
       listeners.forEach((listener) => listener(conversationId, null));
@@ -149,9 +156,11 @@ export function clearDraftKeyCache() {
 
 // Destroys the key and every draft of this identity.
 export async function deleteAllDrafts(userId: string) {
+  wiped.add(userId);
   if (cached?.userId === userId) clearDraftKeyCache();
-  // Let saves already under way finish first, so none lands after the wipe.
-  await Promise.all([...queues.values()].map((run) => run.catch(() => {})));
+  // Let saves and key loads already under way finish first (later ones see
+  // the identity is wiped and do nothing), so none lands after the wipe.
+  await Promise.all([...queues.values(), keyLock].map((run) => run.catch(() => {})));
   const prefix = itemPrefix(userId);
   const names = (await AsyncStorage.getAllKeys()).filter((name) => name.startsWith(prefix));
   if (names.length) await AsyncStorage.multiRemove(names);

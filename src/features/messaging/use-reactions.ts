@@ -33,27 +33,52 @@ export function useReactions(
   const idsRef = useRef(messageIds);
   idsRef.current = messageIds;
   const hasWarned = useRef(false);
+  // Every local change (live update or your own reaction) gets a number, so a
+  // fetch that was already under way can tell which rows changed after it
+  // started and must not be overwritten with its older snapshot.
+  const changeCount = useRef(0);
+  const changedAt = useRef(new Map<string, number>());
 
-  // Replaces what we hold for these messages with what the server has.
+  // Sets (or with null, drops) one row and records that it changed here.
+  const setRow = useCallback((row: StoredReaction | null, key: string) => {
+    changedAt.current.set(key, ++changeCount.current);
+    setRows((prev) => {
+      const next = new Map(prev);
+      if (row) next.set(key, row);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  // Replaces what we hold for these messages with what the server has, except
+  // rows that changed here while the request was out.
   const fetchFor = useCallback(
     async (ids: readonly string[]) => {
       ids.forEach((id) => fetched.current.add(id));
-      for (let i = 0; i < ids.length; i += CHUNK) {
-        const chunk = ids.slice(i, i + CHUNK);
-        try {
-          const loaded = await listReactions(conversationId, chunk);
-          setRows((prev) => {
-            const next = new Map(prev);
-            const inChunk = new Set(chunk);
-            for (const [key, row] of prev) if (inChunk.has(row.message_id)) next.delete(key);
-            for (const row of loaded) next.set(rowKey(row.message_id, row.user_id), row);
-            return next;
-          });
-        } catch (e) {
-          if (!hasWarned.current) console.warn('Loading reactions failed:', (e as Error).message);
-          hasWarned.current = true;
-        }
-      }
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
+      await Promise.all(
+        chunks.map(async (chunk) => {
+          const startedAt = changeCount.current;
+          try {
+            const loaded = await listReactions(conversationId, chunk);
+            const isNewer = (key: string) => (changedAt.current.get(key) ?? 0) > startedAt;
+            setRows((prev) => {
+              const next = new Map(prev);
+              const inChunk = new Set(chunk);
+              for (const [key, row] of prev) if (inChunk.has(row.message_id) && !isNewer(key)) next.delete(key);
+              for (const row of loaded) {
+                const key = rowKey(row.message_id, row.user_id);
+                if (!isNewer(key)) next.set(key, row);
+              }
+              return next;
+            });
+          } catch (e) {
+            if (!hasWarned.current) console.warn('Loading reactions failed:', (e as Error).message);
+            hasWarned.current = true;
+          }
+        }),
+      );
     },
     [conversationId],
   );
@@ -69,24 +94,31 @@ export function useReactions(
     const apply = (payload: { new: object }) => {
       const row = payload.new as StoredReaction;
       if (!row.message_id || !row.user_id) return;
-      setRows((prev) => new Map(prev).set(rowKey(row.message_id, row.user_id), row));
+      setRow(row, rowKey(row.message_id, row.user_id));
     };
+    let hasJoined = false;
     const filter = `conversation_id=eq.${conversationId}`;
     const channel = supabase
       .channel(`reactions:${conversationId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'message_reactions', filter }, apply)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'message_reactions', filter }, apply)
       .subscribe((status) => {
-        // Back after a drop: catch up on everything on screen.
-        if (status === 'SUBSCRIBED' && fetched.current.size) fetchFor([...fetched.current]);
+        if (status !== 'SUBSCRIBED') return;
+        // The first join needs nothing: messages fetch their own reactions as
+        // they load. Back after a drop, catch up on everything loaded.
+        if (hasJoined && fetched.current.size) fetchFor([...fetched.current]);
+        hasJoined = true;
       });
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversationId, fetchFor]);
+  }, [conversationId, fetchFor, setRow]);
 
-  // Decrypted chips per message, oldest reaction first.
+  // Decrypted chips per message, oldest reaction first. A message whose
+  // reactions didn't change keeps the same array, so its bubble (memoised)
+  // doesn't re-render when someone reacts to another message.
   const decrypted = useRef(new Map<string, string | null>());
+  const previous = useRef(new Map<string, ReactionChip[]>());
   const byMessage = useMemo(() => {
     const map = new Map<string, ReactionChip[]>();
     if (!sharedKey) return map;
@@ -104,6 +136,11 @@ export function useReactions(
       chips.push({ userId: row.user_id, emoji, isMine: row.user_id === userId });
       map.set(row.message_id, chips);
     }
+    for (const [messageId, chips] of map) {
+      const before = previous.current.get(messageId);
+      if (before && sameChips(before, chips)) map.set(messageId, before);
+    }
+    previous.current = map;
     return map;
   }, [rows, sharedKey, userId]);
 
@@ -113,7 +150,7 @@ export function useReactions(
     async (messageId: string, emoji: string | null) => {
       if (!sharedKey || !userId) throw new Error('Encryption is not ready for this chat yet.');
       const key = rowKey(messageId, userId);
-      const previous = rowsRef.current.get(key);
+      const before = rowsRef.current.get(key);
       const encrypted = emoji ? encrypt(emoji, sharedKey) : null;
       const optimistic: StoredReaction = {
         message_id: messageId,
@@ -123,22 +160,24 @@ export function useReactions(
         nonce: encrypted?.nonce ?? null,
         updated_at: new Date().toISOString(),
       };
-      setRows((prev) => new Map(prev).set(key, optimistic));
+      setRow(optimistic, key);
       try {
         await setReaction(messageId, encrypted);
       } catch (e) {
-        setRows((prev) => {
-          if (prev.get(key) !== optimistic) return prev;
-          const next = new Map(prev);
-          if (previous) next.set(key, previous);
-          else next.delete(key);
-          return next;
-        });
+        // Put back what was there, unless something newer arrived meanwhile.
+        if (rowsRef.current.get(key) === optimistic) setRow(before ?? null, key);
         throw e;
       }
     },
-    [conversationId, sharedKey, userId],
+    [conversationId, sharedKey, userId, setRow],
   );
 
   return { reactions: byMessage, react };
+}
+
+function sameChips(a: readonly ReactionChip[], b: readonly ReactionChip[]) {
+  return (
+    a.length === b.length &&
+    a.every((chip, i) => chip.userId === b[i].userId && chip.emoji === b[i].emoji && chip.isMine === b[i].isMine)
+  );
 }

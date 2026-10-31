@@ -45,7 +45,7 @@ import { useSession } from '@/hooks/use-session';
 import { ChatWallpaper } from '@/theme/chat-wallpaper';
 import { loadDraft, saveDraft, type Draft } from '@/services/storage/encrypted-drafts';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
-import type { AppTheme } from '@/theme/themes';
+import { chatShadow, type AppTheme } from '@/theme/themes';
 
 export default function ChatScreen() {
   const { id, code } = useLocalSearchParams<{ id: string; code?: string }>();
@@ -101,11 +101,17 @@ export default function ChatScreen() {
   // set aside and comes back afterwards.
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = editingId ? (byId.get(editingId) ?? null) : null;
+  const editingIdRef = useRef(editingId);
+  editingIdRef.current = editingId;
+  // An edit is on its way to the server; the composer keeps it until it lands.
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const setAside = useRef<Draft | null>(null);
   const storedIds = useMemo(() => messages.filter((m) => !m.sendState).map((m) => m.id), [messages]);
   const { reactions, react } = useReactions(id, storedIds, sharedKey, myId);
   const reactionsRef = useRef(reactions);
   reactionsRef.current = reactions;
+  const byIdRef = useRef(byId);
+  byIdRef.current = byId;
   const { isPeerTyping, onDraftChange, stopTyping } = useTyping(id, myId);
   // iOS doesn't shrink a multiline input when its text is cleared, so after a
   // send the input is remounted (and refocused) to start again at one line.
@@ -266,14 +272,18 @@ export default function ChatScreen() {
   // Drafts survive leaving the chat and restarting the app, encrypted on this
   // phone (src/services/storage/encrypted-drafts.ts). While a sent message is
   // being edited, the draft set aside is what's kept.
-  const isDraftLoaded = useRef(false);
+  // State so the save below runs again once loading ends (text typed while it
+  // loaded is saved then); the ref is for the exit flush.
+  const [isDraftLoaded, setIsDraftLoaded] = useState(false);
+  const isDraftLoadedRef = useRef(false);
+  isDraftLoadedRef.current = isDraftLoaded;
   const draftToKeep = useRef<Draft | null>(null);
   draftToKeep.current = editingId ? setAside.current : { text: draft, replyTo: replyToId };
 
   useEffect(() => {
     if (!myId) return;
     let cancelled = false;
-    isDraftLoaded.current = false;
+    setIsDraftLoaded(false);
     loadDraft(myId, id)
       .then((saved) => {
         if (cancelled || !saved) return;
@@ -287,7 +297,9 @@ export default function ChatScreen() {
       })
       .catch((e: Error) => console.warn('Loading draft failed:', e.message))
       .finally(() => {
-        if (!cancelled) isDraftLoaded.current = true;
+        if (cancelled) return;
+        isDraftLoadedRef.current = true;
+        setIsDraftLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -296,21 +308,21 @@ export default function ChatScreen() {
 
   // Saved a moment after typing stops…
   useEffect(() => {
-    if (!myId || !isDraftLoaded.current || editingId) return;
+    if (!myId || !isDraftLoaded || editingId) return;
     const value = { text: draft, replyTo: replyToId };
     const timer = setTimeout(
       () => saveDraft(myId, id, value).catch((e: Error) => console.warn('Saving draft failed:', e.message)),
       400,
     );
     return () => clearTimeout(timer);
-  }, [draft, replyToId, editingId, id, myId]);
+  }, [draft, replyToId, editingId, isDraftLoaded, id, myId]);
 
   // …and right away on leaving the chat or the app. Only with the key already
   // in memory: after the panic button wiped it, it isn't read back.
   useEffect(() => {
     if (!myId) return;
     const flush = () => {
-      if (!isDraftLoaded.current) return;
+      if (!isDraftLoadedRef.current) return;
       saveDraft(myId, id, draftToKeep.current, { onlyIfKeyInMemory: true }).catch((e: Error) =>
         console.warn('Saving draft failed:', e.message),
       );
@@ -351,6 +363,10 @@ export default function ChatScreen() {
 
   const openImage = useCallback((message: DisplayMessage) => {
     setReactingId(null);
+    // A tap waits a moment for a possible double tap; by then the photo may
+    // have been deleted, burned or (view once) opened.
+    const current = byIdRef.current.get(message.id);
+    if (!current || current.isDeleted || current.isExpired || (current.view_once && current.viewed_at)) return;
     setViewingId(message.id);
   }, []);
 
@@ -380,27 +396,29 @@ export default function ChatScreen() {
     setReactionPickerId(message.id);
   }, []);
 
-  // Who reacted with what; yours can be taken back from here.
+  // Who reacted with what; yours can be taken back from here. Stealth keeps
+  // the emoji masked here too (hold the reactions to see them).
   const showReactions = useCallback(
     (message: DisplayMessage) => {
       const list = reactionsRef.current.get(message.id) ?? [];
       if (list.length === 0) return;
       setReactingId(null);
+      const shown = (emoji: string) => (mask ? '•' : emoji);
       showActionSheet(
         list.map((r) =>
           r.isMine
             ? {
-                text: `You  ${r.emoji}  · Tap to remove`,
+                text: `You  ${shown(r.emoji)}  · Tap to remove`,
                 icon: 'close-circle-outline' as const,
                 style: 'destructive' as const,
                 onPress: () => reactTo(message, null),
               }
-            : { text: `${friendName}  ${r.emoji}`, icon: 'person-outline' as const, onPress: () => {} },
+            : { text: `${friendName}  ${shown(r.emoji)}`, icon: 'person-outline' as const, onPress: () => {} },
         ),
         'Reactions',
       );
     },
-    [friendName, reactTo],
+    [friendName, reactTo, mask],
   );
 
   // Put the selected message of yours in the composer to change it.
@@ -541,15 +559,21 @@ export default function ChatScreen() {
 
     if (editing) {
       const target = editing;
-      finishEditing();
-      if (body === target.text) return;
-      if (!canEdit(target, myId)) {
-        showAlert("Can't edit this message", 'Messages can only be edited for 5 minutes after sending.', undefined, {
-          icon: 'time-outline',
-        });
+      if (isSavingEdit) return;
+      if (body === target.text) {
+        finishEditing();
         return;
       }
-      editMessage(target.id, body).catch((e: Error) => showError("Couldn't edit message", e));
+      // Stay in edit mode until the server takes it. The server alone decides
+      // the 5-minute window (it allows a little grace), so if it refuses, the
+      // new text is still in the composer rather than lost.
+      setIsSavingEdit(true);
+      editMessage(target.id, body)
+        .then(() => {
+          if (editingIdRef.current === target.id) finishEditing();
+        })
+        .catch((e: Error) => showError("Couldn't edit message", e))
+        .finally(() => setIsSavingEdit(false));
       return;
     }
 
@@ -884,8 +908,8 @@ export default function ChatScreen() {
               )}
             </View>
             <Pressable
-              style={[styles.send, (!draft.trim() || !isReady) && styles.sendDisabled]}
-              disabled={!draft.trim() || !isReady}
+              style={[styles.send, (!draft.trim() || !isReady || isSavingEdit) && styles.sendDisabled]}
+              disabled={!draft.trim() || !isReady || isSavingEdit}
               onPress={submit}
               accessibilityRole="button"
               accessibilityLabel={editing ? 'Save edit' : 'Send'}>
@@ -944,14 +968,7 @@ export default function ChatScreen() {
 }
 
 const createStyles = ({ colors, chat }: AppTheme) => {
-  // Hairline drop shadow for chips and the floating composer (themes with a chat style).
-  const shadow = chat && {
-    shadowColor: chat.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 0.5,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
-  };
+  const shadow = chatShadow(chat);
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.chatBackground },
     headerTitle: { flexDirection: 'row', alignItems: 'center', gap: 8 },

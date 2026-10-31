@@ -1,3 +1,5 @@
+import type { ViewStyle } from 'react-native';
+
 export type ThemeName = 'light' | 'dark' | 'whatsapp' | 'ghost' | 'stealth';
 export type ThemePreference = ThemeName | 'system';
 
@@ -66,6 +68,39 @@ export type ChatStyle = {
   tabActive: string;
   tabInactive: string;
 };
+
+// The hairline drop shadow a chat style puts under bubbles, chips and the
+// floating composer; nothing for themes without one.
+export function chatShadow(chat: ChatStyle | undefined): ViewStyle | undefined {
+  return (
+    chat && {
+      shadowColor: chat.shadow,
+      shadowOpacity: 1,
+      shadowRadius: 0.5,
+      shadowOffset: { width: 0, height: 1 },
+      elevation: 1,
+    }
+  );
+}
+
+// WhatsApp-style bubble tail: a small triangle continuing the bubble's top
+// edge outwards, its long side slanting back to the bubble.
+export const BUBBLE_TAIL = { width: 8, height: 13 };
+
+// The tail for an incoming (left) or outgoing (right) bubble of this colour.
+export function bubbleTail(side: 'left' | 'right', color: string): ViewStyle {
+  return {
+    position: 'absolute',
+    top: 0,
+    width: 0,
+    height: 0,
+    borderTopWidth: BUBBLE_TAIL.height,
+    borderTopColor: color,
+    ...(side === 'left'
+      ? { left: -BUBBLE_TAIL.width, borderLeftWidth: BUBBLE_TAIL.width, borderLeftColor: 'transparent' }
+      : { right: -BUBBLE_TAIL.width, borderRightWidth: BUBBLE_TAIL.width, borderRightColor: 'transparent' }),
+  };
+}
 
 export type AppTheme = {
   name: ThemeName;
