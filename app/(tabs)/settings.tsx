@@ -8,8 +8,7 @@ import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { HeroPicker } from '@/features/profile/hero-picker';
 import { useMyProfile } from '@/features/profile/use-my-profile';
 import { useSession } from '@/hooks/use-session';
-import { deleteDeviceKeyPair } from '@/services/encryption/device-keys';
-import { supabase } from '@/services/supabase/client';
+import { resetIdentity } from '@/services/security/reset-identity';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import { themePreferences, themes, type AppTheme, type ThemePreference } from '@/theme/themes';
 
@@ -23,10 +22,12 @@ export default function SettingsScreen() {
   const styles = useThemedStyles(createStyles);
 
   async function reset() {
-    // Destroy the private key first: even if sign-out fails, old messages
-    // can no longer be decrypted on this device.
-    if (session) await deleteDeviceKeyPair(session.user.id);
-    await supabase.auth.signOut();
+    // Destroys the private key first, then signs out (locally if need be).
+    try {
+      await resetIdentity(session?.user.id);
+    } catch (e) {
+      showError("Couldn't reset identity", e);
+    }
   }
 
   function chooseHero(next: string | null) {

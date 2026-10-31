@@ -30,8 +30,7 @@ import {
   type SnakeState,
 } from '@/features/disguise/snake-logic';
 import { useSession } from '@/hooks/use-session';
-import { deleteDeviceKeyPair } from '@/services/encryption/device-keys';
-import { supabase } from '@/services/supabase/client';
+import { resetIdentity } from '@/services/security/reset-identity';
 
 // A real, playable Snake game that Ghost hides behind. Nothing here mentions
 // Ghost: Settings → Redeem code takes the master key, and anything else is
@@ -432,9 +431,15 @@ function GameSettings({
     setCodeMessage(null);
     // Let the spinner draw before the (deliberately slow) key check.
     await new Promise((resolve) => setTimeout(resolve, 50));
-    const ok = await unlock(entered);
-    setIsChecking(false);
-    setCode('');
+    let ok = false;
+    try {
+      ok = await unlock(entered);
+    } catch {
+      // Treated like a wrong code; the button must never spin forever.
+    } finally {
+      setIsChecking(false);
+      setCode('');
+    }
     if (!ok) setCodeMessage('Invalid code');
   }
 
@@ -446,8 +451,7 @@ function GameSettings({
     setIsConfirmingReset(false);
     onReset();
     try {
-      if (session) await deleteDeviceKeyPair(session.user.id);
-      await supabase.auth.signOut();
+      await resetIdentity(session?.user.id);
     } catch {
       // Nothing to show: to anyone watching, the game data is simply reset.
     }

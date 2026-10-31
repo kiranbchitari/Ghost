@@ -16,6 +16,8 @@ const storageKey = (userId: string) => `ghost.e2e.secret.${userId}`;
 
 const keyPairs = new Map<string, Promise<DeviceKeyPair>>();
 const sharedKeys = new Map<string, Uint8Array>();
+// Bumped by every wipe, so a load that was in flight doesn't put a key back.
+let generation = 0;
 
 // The user's key pair: loaded from SecureStore, or created on first use. The
 // public half is published to the user's profile so friends can encrypt to it.
@@ -30,7 +32,9 @@ export function getDeviceKeyPair(userId: string) {
 }
 
 export async function getSharedKey(userId: string, friendPublicKey: string) {
+  const startedAt = generation;
   const { publicKey, secretKey } = await getDeviceKeyPair(userId);
+  if (generation !== startedAt) throw new Error('Keys were cleared. Open the chat again.');
   const cacheKey = `${publicKey}:${friendPublicKey}`;
   let key = sharedKeys.get(cacheKey);
   if (!key) {
@@ -51,6 +55,7 @@ export async function deleteDeviceKeyPair(userId: string) {
 
 // Forgets every key held in memory (the stored private key is untouched).
 export function clearDeviceKeyCache() {
+  generation++;
   keyPairs.forEach((pending) => pending.then(({ secretKey }) => secretKey.fill(0)).catch(() => {}));
   keyPairs.clear();
   sharedKeys.forEach((key) => key.fill(0));

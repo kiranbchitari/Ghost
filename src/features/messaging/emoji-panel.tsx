@@ -73,12 +73,9 @@ export function EmojiPanel({ height, bottomInset, onEmoji }: Props) {
         data={active.emoji}
         keyExtractor={(emoji) => emoji}
         numColumns={COLUMNS}
-        initialNumToRender={COLUMNS * 6}
-        getItemLayout={(_, index) => ({
-          length: ROW_HEIGHT,
-          offset: ROW_HEIGHT * Math.floor(index / COLUMNS),
-          index,
-        })}
+        // With columns, FlatList counts (and lays out) rows, not cells.
+        initialNumToRender={8}
+        getItemLayout={(_, index) => ({ length: ROW_HEIGHT, offset: ROW_HEIGHT * index, index })}
         keyboardShouldPersistTaps="always"
         renderItem={({ item }) => (
           <Pressable

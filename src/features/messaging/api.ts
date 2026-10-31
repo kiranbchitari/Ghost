@@ -271,6 +271,17 @@ export async function burnExpiredMessages(conversationId: string) {
   return ((data ?? []) as (string | null)[]).filter((path): path is string => !!path);
 }
 
+// Encrypted photo files of this chat whose messages the background sweep
+// burned, for the app to delete (the server can't remove Storage files from
+// SQL). Missing before the harden-messages migration: treated as none.
+export async function claimAttachmentCleanup(conversationId: string) {
+  const { data, error } = await supabase.rpc('claim_attachment_cleanup', {
+    p_conversation_id: conversationId,
+  });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as (string | null)[]).filter((path): path is string => !!path);
+}
+
 export async function eraseConversation(conversationId: string) {
   const { data, error } = await supabase.rpc('erase_conversation', {
     p_conversation_id: conversationId,

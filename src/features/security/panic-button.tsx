@@ -7,7 +7,6 @@ import Reanimated, { makeMutable, useAnimatedStyle } from 'react-native-reanimat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useDisguise } from '@/features/disguise/disguise-provider';
-import { clearDeviceKeyCache } from '@/services/encryption/device-keys';
 import { panicLock } from '@/services/security/panic-lock';
 import { useAppTheme } from '@/theme/theme-provider';
 
@@ -43,9 +42,13 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(val
 export function PanicButton() {
   const { theme } = useAppTheme();
   const { lock } = useDisguise();
-  const hideBehindGame = () => {
-    clearDeviceKeyCache();
+  // Locking wipes keys, decrypted photos and dialogs from memory.
+  const hideBehindGame = () => lock();
+  // Hide first, so chats are gone even where closing the app isn't possible
+  // (no native module, e.g. Expo Go on iOS).
+  const closeApp = () => {
     lock();
+    panicLock();
   };
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -92,6 +95,8 @@ export function PanicButton() {
   const gesture = useRef({ dragging: false, held: false });
   const onTap = useRef(hideBehindGame);
   onTap.current = hideBehindGame;
+  const onHold = useRef(closeApp);
+  onHold.current = closeApp;
 
   const panResponder = useMemo(() => {
     const cancelHold = () => {
@@ -114,7 +119,7 @@ export function PanicButton() {
         holdTimer.current = setTimeout(() => {
           gesture.current.held = true;
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-          panicLock();
+          onHold.current();
         }, HOLD_MS);
       },
       onPanResponderMove: (_, { dx, dy }) => {

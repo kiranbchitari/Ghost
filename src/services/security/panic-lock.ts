@@ -2,6 +2,7 @@ import { requireOptionalNativeModule } from 'expo';
 import { BackHandler, Platform } from 'react-native';
 
 import { clearDeviceKeyCache } from '@/services/encryption/device-keys';
+import { clearDraftKeyCache } from '@/services/storage/encrypted-drafts';
 
 // Local native module (modules/panic-lock). Missing in Expo Go and on web.
 const PanicLock = requireOptionalNativeModule<{ exit(): void }>('PanicLock');
@@ -12,6 +13,7 @@ const PanicLock = requireOptionalNativeModule<{ exit(): void }>('PanicLock');
 export function panicLock() {
   // Drop key material first, in case the process outlives this call.
   clearDeviceKeyCache();
+  clearDraftKeyCache();
 
   if (PanicLock) {
     PanicLock.exit();

@@ -24,7 +24,14 @@ export function deriveSharedKey(theirPublicKey: string, mySecretKey: Uint8Array)
   return nacl.box.before(decodeBase64(theirPublicKey), mySecretKey);
 }
 
+// A key zero-filled by a panic/lock wipe must never be used: anything sealed
+// with it would be unreadable to the friend and trivially readable to others.
+function assertLiveKey(key: Uint8Array) {
+  if (key.every((b) => b === 0)) throw new Error('The encryption key was cleared. Open the chat again.');
+}
+
 export function encrypt(plaintext: string, sharedKey: Uint8Array): Encrypted {
+  assertLiveKey(sharedKey);
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
   const box = nacl.box.after(decodeUTF8(plaintext), nonce, sharedKey);
   return { ciphertext: encodeBase64(box), nonce: encodeBase64(nonce) };
@@ -42,6 +49,7 @@ export function decrypt({ ciphertext, nonce }: Encrypted, sharedKey: Uint8Array)
 
 // Raw bytes (photos). Same box as messages, with its own random nonce.
 export function encryptBytes(bytes: Uint8Array, sharedKey: Uint8Array) {
+  assertLiveKey(sharedKey);
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
   return { data: nacl.box.after(bytes, nonce, sharedKey), nonce: encodeBase64(nonce) };
 }
@@ -61,6 +69,7 @@ export function generateSymmetricKey() {
 }
 
 export function sealLocal(plaintext: string, key: Uint8Array): Encrypted {
+  assertLiveKey(key);
   const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
   const box = nacl.secretbox(decodeUTF8(plaintext), nonce, key);
   return { ciphertext: encodeBase64(box), nonce: encodeBase64(nonce) };

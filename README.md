@@ -107,7 +107,10 @@ stays blocked after it locks on the way to the background until the app is opene
 Android takes the Recents snapshot after the app has left the screen: leaving from a chat gives a
 blank thumbnail, leaving from the game shows the game. iOS also blurs its app switcher snapshot
 while Ghost is unlocked. In the game, Settings → Redeem code takes the master key; anything else
-is an "Invalid code". After 5 wrong keys every try fails for a minute.
+is an "Invalid code". After 5 wrong keys every try fails for a minute; the count is kept in
+SecureStore, so restarting the app doesn't reset it. Every lock (background, Lock now, panic) also
+wipes keys, decrypted photos and open dialogs from memory. The camera and photo picker don't count
+as leaving the app (on Android they are separate screens), so attaching a photo doesn't lock Ghost.
 
 Until a master key is set, the starting key `ghost` opens Ghost, which then nudges the person to
 set their own (Settings → Game disguise; `ghost` itself isn't accepted as a key). Only a salted,
@@ -171,6 +174,14 @@ Migration: `supabase/migrations/20261031190000_message_edits.sql`.
 
 All four degrade gracefully: until their migrations are applied, the app works as before and the
 feature simply doesn't show (reacting or editing then reports the server's error).
+
+Two later migrations are safe to paste into the SQL Editor as they are:
+`20261031210000_burn_checks.sql` (burned messages can't be edited or reacted to) and
+`20261031220000_harden_messages.sql`. The second makes the server set the columns only it should:
+receipts, timestamps and the view-once/deleted state of new messages, so a modified app can't
+fake blue ticks or dodge a burn timer. It also enforces that photos live in their own chat's
+folder, gives one chat per pair even when both add each other at once, and queues the photos of
+messages burned by the background sweep for the app to delete from Storage.
 
 To apply all three from the dashboard instead of the CLI, paste
 `supabase/sql-editor/2026-10-31_reactions_edits_typing.sql` into **SQL Editor** and run it. It makes

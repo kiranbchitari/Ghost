@@ -1,5 +1,5 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import { listConversations, type ConversationSummary } from '@/features/messaging/api';
@@ -36,8 +36,12 @@ export function useConversations() {
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Every message change anywhere reloads the list; reloads can overlap and
+  // finish out of order. Only the newest one is applied.
+  const latestReload = useRef(0);
   const reload = useCallback(async () => {
     if (!userId) return;
+    const ticket = ++latestReload.current;
     try {
       const rows = await listConversations();
       const [previews, drafts] = await Promise.all([
@@ -47,12 +51,13 @@ export function useConversations() {
           rows.map((row) => row.conversation_id),
         ).catch(() => new Map<string, { text: string }>()),
       ]);
+      if (ticket !== latestReload.current) return;
       setConversations(
         previews.map((row) => ({ ...row, draft: drafts.get(row.conversation_id)?.text.trim() || null })),
       );
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      if (ticket === latestReload.current) setError((e as Error).message);
     }
   }, [userId]);
 

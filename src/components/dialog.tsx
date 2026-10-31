@@ -76,6 +76,18 @@ export function showActionSheet(options: SheetOption[], title?: string) {
   enqueue({ kind: 'sheet', id: nextId++, title, options });
 }
 
+// Drops every pending dialog without running any button (on lock: a queued
+// "Erase chat?" must not reappear later and still act).
+export function clearDialogs() {
+  queue = [];
+  emit();
+}
+
+// A dialog is up: screens leave Android's back button to it.
+export function isDialogShowing() {
+  return snapshot.request !== null;
+}
+
 // What tapping outside or pressing Android's back button does: the cancel
 // button, or the only button. Null means the dialog needs an explicit choice.
 function dismissAction(request: Request): (() => void) | null {

@@ -18,9 +18,18 @@ import {
 // Nothing is written to disk; restarting the app or deleting the message
 // drops them.
 const decrypted = new Map<string, string>();
+// Photos whose messages were deleted, burned or opened (view once): a download
+// still under way for one of them must not put it back in memory.
+const forgotten = new Set<string>();
 
 export function forgetImage(messageId: string) {
+  forgotten.add(messageId);
   decrypted.delete(messageId);
+}
+
+// Drops every decrypted photo (on lock, panic and identity reset).
+export function clearDecryptedImages() {
+  decrypted.clear();
 }
 
 // Encrypts a JPEG (base64) with the chat key and uploads the ciphertext.
@@ -58,6 +67,7 @@ async function loadImage(
   if (!bytes) throw new Error("Couldn't decrypt this photo");
 
   const uri = `data:image/jpeg;base64,${encodeBytes(bytes)}`;
+  if (forgotten.has(messageId)) throw new Error('This photo is gone');
   decrypted.set(messageId, uri);
   return uri;
 }

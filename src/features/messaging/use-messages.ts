@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 import { BURN_ANIMATION_MS, burnsAt } from '@/features/burn-mode/timer';
 import {
   burnExpiredMessages,
+  claimAttachmentCleanup,
   deleteMessage as deleteMessageRpc,
   editMessage as editMessageRpc,
   eraseConversation,
@@ -63,13 +64,31 @@ function merge(incoming: Message[], existing: Message[]) {
   return [...byId.values()].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 }
 
-export function useMessages(conversationId: string) {
+// isVisible: the chat is actually on screen (focused, nothing covering it).
+// Messages are only marked read then, so a read-mode burn timer can't start
+// on messages nobody has seen.
+export function useMessages(conversationId: string, { isVisible = true }: { isVisible?: boolean } = {}) {
   const { session } = useSession();
   const userId = session?.user.id;
   const [messages, setMessages] = useState<Message[]>([]);
   const [peer, setPeer] = useState<ConversationPeer | null>(null);
   const [sharedKey, setSharedKey] = useState<Uint8Array | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const sharedKeyRef = useRef(sharedKey);
+  sharedKeyRef.current = sharedKey;
+  // Setting up the chat key, and loading messages, can each fail (offline);
+  // both are retried when the connection or the app comes back.
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const error = keyError ?? loadError;
+  const [keyAttempt, setKeyAttempt] = useState(0);
+  // View-once photos burned here whose server update hasn't gone through yet:
+  // they stay burned locally (even across a resync) and are retried.
+  const pendingViewed = useRef(new Map<string, string | null>());
+  // Failed messages the person chose to delete while a retry was under way.
+  const discarded = useRef(new Set<string>());
+  // Text sends go one at a time, so they're stored in the order they were sent.
+  const sendQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const hasLoaded = useRef(false);
   const [settings, setSettings] = useState<ConversationSettings | null>(null);
   const [expiredIds, setExpiredIds] = useState<ReadonlySet<string>>(new Set());
   const [now, setNow] = useState(Date.now());
@@ -122,52 +141,111 @@ export function useMessages(conversationId: string) {
         setPeer(loadedPeer);
 
         if (!loadedPeer.friend_public_key) {
-          setError(`${loadedPeer.friend_code} hasn't set up encryption yet. Ask them to open Ghost.`);
+          setKeyError(`${loadedPeer.friend_code} hasn't set up encryption yet. Ask them to open Ghost.`);
           return;
         }
         const key = await getSharedKey(userId, loadedPeer.friend_public_key);
-        if (!cancelled) setSharedKey(key);
+        if (cancelled) return;
+        setSharedKey(key);
+        setKeyError(null);
       } catch (e) {
-        if (!cancelled) setError((e as Error).message);
+        if (!cancelled) setKeyError((e as Error).message);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [conversationId, userId]);
+    // keyAttempt: tried again after a failure, once back online or in the app.
+  }, [conversationId, userId, keyAttempt]);
+
+  const retryKeyIfNeeded = useCallback(() => {
+    if (!sharedKeyRef.current) setKeyAttempt((n) => n + 1);
+  }, []);
+
+  // Burned locally but not yet on the server: keep them burned, and try again.
+  const keepPendingViewed = useCallback((list: Message[]) => {
+    if (pendingViewed.current.size === 0) return list;
+    return list.map((m) => {
+      if (!pendingViewed.current.has(m.id) || m.viewed_at) return m;
+      return { ...m, viewed_at: new Date().toISOString(), attachment_path: null };
+    });
+  }, []);
+
+  const flushPendingViewed = useCallback(() => {
+    for (const [id, path] of pendingViewed.current) {
+      markMessageViewed(id)
+        .then(() => {
+          pendingViewed.current.delete(id);
+          if (path) removeUploadedImage(path);
+        })
+        .catch((e: Error) => console.warn('Burning view-once photo failed:', e.message));
+    }
+  }, []);
+
+  // Refetches the chat's settings (set by refreshSettings' owner effect below).
+  const refreshSettings = useRef<() => void>(() => {});
 
   // Fetches the latest page and merges it in: on opening, on every
   // (re)connection and when the app returns to the foreground, so nothing
   // sent or changed while offline is missed.
-  const resync = useCallback(
-    (isFirstLoad = false) =>
-      listMessages(conversationId)
-        .then((loaded) => {
-          const at = Date.now();
-          const live = loaded.filter((m) => {
-            const due = burnsAt(m);
-            return due === null || due > at;
-          });
-          if (live.length < loaded.length) sweepServer();
-          if (isFirstLoad) setHasOlder(loaded.length === PAGE_SIZE);
-          setMessages((prev) => merge(live, prev));
-        })
-        .catch((e: Error) => {
-          if (isFirstLoad) setError(e.message);
-        }),
-    [conversationId, sweepServer],
-  );
+  const resync = useCallback(async () => {
+    try {
+      const loaded = await listMessages(conversationId);
+      // More than a page arrived while away: page back until it meets what we
+      // already have, so nothing in between goes missing.
+      const newestHeld = messagesRef.current[0];
+      if (hasLoaded.current && newestHeld && loaded.length === PAGE_SIZE) {
+        let oldest = loaded[loaded.length - 1];
+        for (let page = 0; page < 20 && Date.parse(oldest.created_at) > Date.parse(newestHeld.created_at); page++) {
+          const older = await listMessages(conversationId, { before: oldest.created_at });
+          loaded.push(...older);
+          if (older.length < PAGE_SIZE) break;
+          oldest = older[older.length - 1];
+        }
+      }
+      const at = Date.now();
+      const live = loaded.filter((m) => {
+        const due = burnsAt(m);
+        return due === null || due > at;
+      });
+      if (live.length < loaded.length) sweepServer();
+      // Deleted or opened while away: drop their photos from memory.
+      live.forEach((m) => (m.deleted_at || m.viewed_at) && forgetImage(m.id));
+      if (!hasLoaded.current) {
+        hasLoaded.current = true;
+        setHasOlder(loaded.length >= PAGE_SIZE);
+      }
+      setLoadError(null);
+      setMessages((prev) => keepPendingViewed(merge(live, prev)));
+    } catch (e) {
+      if (!hasLoaded.current) setLoadError((e as Error).message);
+    }
+  }, [conversationId, sweepServer, keepPendingViewed]);
+
+  // Back in the app or back online: catch up on everything that may have
+  // changed meanwhile (messages, an erase or timer change, a failed key setup,
+  // view-once photos still to burn on the server).
+  const catchUp = useCallback(() => {
+    resync();
+    refreshSettings.current();
+    retryKeyIfNeeded();
+    flushPendingViewed();
+    // Photos of messages the background sweep burned: delete their files.
+    claimAttachmentCleanup(conversationId)
+      .then((paths) => paths.forEach(removeUploadedImage))
+      .catch(() => {});
+  }, [conversationId, resync, retryKeyIfNeeded, flushPendingViewed]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') resync();
+      if (state === 'active') catchUp();
     });
     return () => subscription.remove();
-  }, [resync]);
+  }, [catchUp]);
 
   useEffect(() => {
-    resync(true);
+    resync();
 
     const filter = `conversation_id=eq.${conversationId}`;
     const insert = (payload: { new: object }) =>
@@ -199,13 +277,13 @@ export function useMessages(conversationId: string) {
       .subscribe((status) => {
         setIsConnected(status === 'SUBSCRIBED');
         // Back after a drop: pick up whatever arrived in the gap.
-        if (status === 'SUBSCRIBED') resync();
+        if (status === 'SUBSCRIBED') catchUp();
       });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversationId, resync]);
+  }, [conversationId, resync, catchUp]);
 
   // Older messages, a page at a time, as the person scrolls up.
   const loadOlder = useCallback(async () => {
@@ -238,9 +316,14 @@ export function useMessages(conversationId: string) {
       }
     };
 
-    getConversationSettings(conversationId)
-      .then((loaded) => !cancelled && apply(loaded))
-      .catch((e: Error) => console.warn('Loading chat settings failed:', e.message));
+    const load = () =>
+      getConversationSettings(conversationId)
+        .then((loaded) => !cancelled && apply(loaded))
+        .catch((e: Error) => console.warn('Loading chat settings failed:', e.message));
+    load();
+    // An erase or timer change made while this phone was away is picked up
+    // when it catches up, not only from the live feed.
+    refreshSettings.current = load;
 
     const channel = supabase
       .channel(`conversation:${conversationId}`)
@@ -253,6 +336,7 @@ export function useMessages(conversationId: string) {
 
     return () => {
       cancelled = true;
+      refreshSettings.current = () => {};
       supabase.removeChannel(channel);
     };
   }, [conversationId, expire]);
@@ -290,8 +374,15 @@ export function useMessages(conversationId: string) {
   );
 
   useEffect(() => {
-    if (!userId || !hasUnread || appState !== 'active') return;
+    if (!userId || !hasUnread || appState !== 'active' || !isVisible) return;
 
+    // Only the messages that were here when asking: one arriving meanwhile is
+    // still unread on the server, so it mustn't look read (and burn) here.
+    const asked = new Set(
+      messagesRef.current
+        .filter((m) => m.sender_id !== userId && m.read_at === null && m.ciphertext !== null)
+        .map((m) => m.id),
+    );
     markConversationRead(conversationId)
       .then(() => {
         // Apply locally too, so a later message re-triggers this effect even
@@ -299,14 +390,13 @@ export function useMessages(conversationId: string) {
         const now = new Date().toISOString();
         setMessages((prev) =>
           prev.map((m) =>
-            m.sender_id !== userId && m.read_at === null && m.ciphertext !== null
-              ? { ...m, read_at: now, delivered_at: m.delivered_at ?? now }
-              : m,
+            asked.has(m.id) && m.read_at === null ? { ...m, read_at: now, delivered_at: m.delivered_at ?? now } : m,
           ),
         );
       })
       .catch((e: Error) => console.warn('Marking conversation read failed:', e.message));
-  }, [conversationId, userId, hasUnread, appState]);
+    // isConnected: a failed attempt is retried once back online.
+  }, [conversationId, userId, hasUnread, appState, isVisible, isConnected]);
 
   const displayMessages = useMemo<DisplayMessage[]>(() => {
     const stored = new Set(messages.map((m) => m.id));
@@ -358,25 +448,39 @@ export function useMessages(conversationId: string) {
   const deliver = useCallback(
     // isFirstAttempt: a retry can get back the copy an earlier attempt stored,
     // whose timestamp says nothing about the clocks now.
-    async (message: PendingMessage, isFirstAttempt = false) => {
-      if (!sharedKey) return;
+    (message: PendingMessage, isFirstAttempt = false) => {
+      if (!sharedKey) return Promise.resolve();
+      discarded.current.delete(message.id);
       setPending((prev) => prev.map((p) => (p.id === message.id ? { ...p, state: 'sending' } : p)));
-      try {
-        const sentAt = Date.now();
-        const stored = await sendMessage(
-          conversationId,
-          encrypt(message.text, sharedKey),
-          undefined,
-          message.replyTo,
-          message.id,
-        );
-        if (isFirstAttempt) noteServerTime(stored.created_at, sentAt, Date.now());
-        setMessages((prev) => merge([stored], prev));
-        setPending((prev) => prev.filter((p) => p.id !== message.id));
-      } catch (e) {
-        console.warn('Sending failed:', (e as Error).message);
-        setPending((prev) => prev.map((p) => (p.id === message.id ? { ...p, state: 'failed' } : p)));
-      }
+      // One at a time, in the order they were sent: the server stamps the time
+      // on arrival, so two sends racing could otherwise swap places.
+      const run = sendQueue.current.then(async () => {
+        try {
+          const sentAt = Date.now();
+          const stored = await sendMessage(
+            conversationId,
+            encrypt(message.text, sharedKey),
+            undefined,
+            message.replyTo,
+            message.id,
+          );
+          if (isFirstAttempt) noteServerTime(stored.created_at, sentAt, Date.now());
+          setPending((prev) => prev.filter((p) => p.id !== message.id));
+          // Deleted by the person while this retry was under way: it went out
+          // anyway, so take it back for everyone rather than show it.
+          if (discarded.current.has(message.id)) {
+            discarded.current.delete(message.id);
+            deleteMessageRpc(stored.id).catch((e: Error) => console.warn('Withdrawing message failed:', e.message));
+            return;
+          }
+          setMessages((prev) => merge([stored], prev));
+        } catch (e) {
+          console.warn('Sending failed:', (e as Error).message);
+          setPending((prev) => prev.map((p) => (p.id === message.id ? { ...p, state: 'failed' } : p)));
+        }
+      });
+      sendQueue.current = run;
+      return run;
     },
     [conversationId, sharedKey],
   );
@@ -408,6 +512,8 @@ export function useMessages(conversationId: string) {
   );
 
   const discard = useCallback((id: string) => {
+    // If a retry is under way it may still land; deliver withdraws it then.
+    discarded.current.add(id);
     setPending((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
@@ -423,13 +529,25 @@ export function useMessages(conversationId: string) {
     async (image: { base64: string; width: number; height: number }, viewOnce: boolean) => {
       if (!sharedKey) throw new Error('Encryption is not ready for this chat yet.');
       const { path, envelope } = await encryptAndUploadImage(conversationId, image, sharedKey);
+      // Chosen here so a lost reply can be checked, and a retry can't duplicate it.
+      const id = randomUuid();
       try {
-        const message = await sendMessage(conversationId, encrypt(JSON.stringify(envelope), sharedKey), {
-          attachmentPath: path,
-          viewOnce,
-        });
+        const message = await sendMessage(
+          conversationId,
+          encrypt(JSON.stringify(envelope), sharedKey),
+          { attachmentPath: path, viewOnce },
+          undefined,
+          id,
+        );
         setMessages((prev) => merge([message], prev));
       } catch (e) {
+        // The message may have been stored even though the reply was lost:
+        // then its photo must stay.
+        const stored = await getMessage(id).catch(() => null);
+        if (stored) {
+          setMessages((prev) => merge([stored], prev));
+          return;
+        }
         await removeUploadedImage(path);
         throw e;
       }
@@ -511,15 +629,20 @@ export function useMessages(conversationId: string) {
   }, [conversationId, expire]);
 
   // A view-once photo was closed: record it, then destroy the file.
-  const markViewed = useCallback(async (message: Message) => {
-    await markMessageViewed(message.id);
-    forgetImage(message.id);
-    const now = new Date().toISOString();
-    setMessages((prev) =>
-      prev.map((m) => (m.id === message.id ? withUpdate(m, { ...m, viewed_at: now }) : m)),
-    );
-    if (message.attachment_path) await removeUploadedImage(message.attachment_path);
-  }, []);
+  // Burned here first, so it can't be reopened even if the server can't be
+  // reached; the server update (and file removal) is retried until it lands.
+  const markViewed = useCallback(
+    async (message: Message) => {
+      forgetImage(message.id);
+      const now = new Date().toISOString();
+      setMessages((prev) =>
+        prev.map((m) => (m.id === message.id ? withUpdate(m, { ...m, viewed_at: now }) : m)),
+      );
+      pendingViewed.current.set(message.id, message.attachment_path);
+      flushPendingViewed();
+    },
+    [flushPendingViewed],
+  );
 
   return {
     messages: displayMessages,

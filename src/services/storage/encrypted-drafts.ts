@@ -131,6 +131,11 @@ export function saveDraft(
 ) {
   const name = itemName(userId, conversationId);
   const isEmpty = !draft || (!draft.text.trim() && !draft.replyTo);
+  const seal = (key: Uint8Array) =>
+    sealLocal(JSON.stringify({ text: draft!.text, replyTo: draft!.replyTo ?? null }), key);
+  // With the key in memory, seal right now (synchronously), so a wipe that
+  // follows this call, e.g. on lock, can't catch the draft unsealed.
+  const sealedNow = !isEmpty && cached?.userId === userId ? seal(cached.key) : null;
   return enqueue(name, async () => {
     if (wiped.has(userId)) return;
     if (isEmpty) {
@@ -138,10 +143,13 @@ export function saveDraft(
       listeners.forEach((listener) => listener(conversationId, null));
       return;
     }
-    if (options.onlyIfKeyInMemory && cached?.userId !== userId) return;
-    const key = await getKey(userId, true);
-    if (!key) return;
-    const sealed = sealLocal(JSON.stringify({ text: draft.text, replyTo: draft.replyTo ?? null }), key);
+    let sealed = sealedNow;
+    if (!sealed) {
+      if (options.onlyIfKeyInMemory) return;
+      const key = await getKey(userId, true);
+      if (!key) return;
+      sealed = seal(key);
+    }
     await AsyncStorage.setItem(name, JSON.stringify({ c: sealed.ciphertext, n: sealed.nonce }));
     listeners.forEach((listener) => listener(conversationId, draft));
   });

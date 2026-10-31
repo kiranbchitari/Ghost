@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Clipboard from 'expo-clipboard';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { useHeaderHeight } from 'expo-router/react-navigation';
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
@@ -23,7 +23,8 @@ import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller
 import Animated, { useAnimatedReaction, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { showActionSheet, showAlert, showError } from '@/components/dialog';
+import { isDialogShowing, showActionSheet, showAlert, showError } from '@/components/dialog';
+import { useDisguise } from '@/features/disguise/disguise-provider';
 import { BurnSettingsSheet } from '@/features/burn-mode/burn-settings-sheet';
 import { describeBurn, formatBurn } from '@/features/burn-mode/timer';
 import { ImageViewer } from '@/features/burn-photo/image-viewer';
@@ -41,6 +42,7 @@ import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { heroFor } from '@/features/profile/heroes';
 import { useMessages, type DisplayMessage } from '@/features/messaging/use-messages';
 import { panicBottomPanel } from '@/features/security/panic-button';
+import { onBeforeWipe } from '@/features/security/wipe-memory';
 import { useSession } from '@/hooks/use-session';
 import { ChatWallpaper } from '@/theme/chat-wallpaper';
 import { loadDraft, saveDraft, type Draft } from '@/services/storage/encrypted-drafts';
@@ -52,6 +54,10 @@ export default function ChatScreen() {
   const { session } = useSession();
   const { theme } = useAppTheme();
   const styles = useThemedStyles(createStyles);
+  const { withoutAutoLock } = useDisguise();
+  const isFocused = useIsFocused();
+  const [pickedImage, setPickedImage] = useState<PickedImage | null>(null);
+  const [viewingId, setViewingId] = useState<string | null>(null);
   const {
     messages,
     peer,
@@ -72,11 +78,11 @@ export default function ChatScreen() {
     settings,
     setTimer,
     eraseForEveryone,
-  } = useMessages(id);
+    // Read receipts only while the chat itself is on screen: not under the
+    // photo composer or viewer, and not with another screen on top.
+  } = useMessages(id, { isVisible: isFocused && !pickedImage && !viewingId });
   const [isBurnSheetOpen, setIsBurnSheetOpen] = useState(false);
   const burnSummary = settings && describeBurn(settings.burn_seconds, settings.burn_mode);
-  const [pickedImage, setPickedImage] = useState<PickedImage | null>(null);
-  const [viewingId, setViewingId] = useState<string | null>(null);
   const viewing = messages.find((m) => m.id === viewingId) ?? null;
   const myId = session?.user.id;
   const friendName = peer?.friend_code ?? code ?? 'Them';
@@ -239,6 +245,8 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!selectedId && !isAttachOpen && !isEmojiOpen && !reactingId && !reactionPickerId && !editingId) return;
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      // A dialog is up: back belongs to it.
+      if (isDialogShowing()) return false;
       if (selectedId) {
         setSelectedId(null);
         return true;
@@ -337,8 +345,11 @@ export default function ChatScreen() {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active') flush();
     });
+    // Locking wipes the drafts key: seal the draft first.
+    const stopBeforeWipe = onBeforeWipe(flush);
     return () => {
       subscription.remove();
+      stopBeforeWipe();
       flush();
     };
   }, [id, myId]);
@@ -508,10 +519,16 @@ export default function ChatScreen() {
   }
 
   // Scroll to a quoted message and tint it for a moment.
+  const jumpTarget = useRef<string | null>(null);
+  const jumpRetry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  useEffect(() => () => clearTimeout(jumpRetry.current), []);
   const jumpTo = useCallback(
     (messageId: string) => {
       const index = rows.findIndex((row) => row.type === 'message' && row.message.id === messageId);
       if (index < 0) return;
+      jumpTarget.current = messageId;
       listRef.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
       setFlashId(messageId);
     },
@@ -548,7 +565,9 @@ export default function ChatScreen() {
 
   function pick(source: 'camera' | 'library') {
     setIsAttachOpen(false);
-    pickImage(source)
+    // The camera and photo picker are separate screens on Android: leaving for
+    // them mustn't lock Ghost (and lose the photo).
+    withoutAutoLock(() => pickImage(source))
       .then((image) => image && setPickedImage(image))
       .catch((e: Error) => showError("Couldn't open photos", e));
   }
@@ -558,10 +577,35 @@ export default function ChatScreen() {
     try {
       await sendImage(pickedImage, viewOnce);
       setPickedImage(null);
+      isNearBottom.current = true;
+      scrollToLatest(true);
     } catch (e) {
       showError('Photo not sent', e);
     }
   }
+
+  // A view-once photo still open when the chat goes away (Ghost locked, or
+  // the panic button) is burned as if closed, so it can't be opened again.
+  const viewingRef = useRef(viewing);
+  viewingRef.current = viewing;
+  const markViewedRef = useRef(markViewed);
+  markViewedRef.current = markViewed;
+  const myIdRef = useRef(myId);
+  myIdRef.current = myId;
+  useEffect(
+    () => () => {
+      const open = viewingRef.current;
+      if (open?.view_once && !open.viewed_at && open.sender_id !== myIdRef.current) {
+        markViewedRef.current(open).catch(() => {});
+      }
+    },
+    [],
+  );
+
+  // Deleted or burned while open: just close (nothing left to burn).
+  useEffect(() => {
+    if (viewingId && (!viewing || viewing.isDeleted || viewing.isExpired)) setViewingId(null);
+  }, [viewingId, viewing]);
 
   function closeViewer() {
     const message = viewing;
@@ -749,7 +793,14 @@ export default function ChatScreen() {
           // Rows vary in height, so a far jump can miss: land near it, then retry.
           onScrollToIndexFailed={({ index, averageItemLength }) => {
             listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
-            setTimeout(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.5 }), 100);
+            // Look the message up again: an older page may have loaded, or rows
+            // gone, in the meantime.
+            const target = jumpTarget.current;
+            clearTimeout(jumpRetry.current);
+            jumpRetry.current = setTimeout(() => {
+              const again = rowsRef.current.findIndex((row) => row.type === 'message' && row.message.id === target);
+              if (again >= 0) listRef.current?.scrollToIndex({ index: again, viewPosition: 0.5 });
+            }, 100);
           }}
           extraData={[selectedId, flashId, quotes, reactingId, reactions]}
           renderItem={({ item }) =>

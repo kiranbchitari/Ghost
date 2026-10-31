@@ -12,6 +12,7 @@ import {
 import { AppState } from 'react-native';
 
 import { showAlert } from '@/components/dialog';
+import { wipeSecretsFromMemory } from '@/features/security/wipe-memory';
 import {
   clearMasterKey,
   DEFAULT_MASTER_KEY,
@@ -37,6 +38,11 @@ type DisguiseState = {
   unlock: (key: string) => Promise<boolean>;
   lock: () => void;
   changeKey: (key: string) => Promise<void>;
+  // Runs `task` (the camera or photo picker, a permission prompt) without
+  // locking when the app goes to the background for it: on Android those are
+  // separate screens, so the app counts as left. Locks afterwards if the app
+  // isn't back in the foreground by then.
+  withoutAutoLock: <T>(task: () => Promise<T>) => Promise<T>;
 };
 
 const DisguiseContext = createContext<DisguiseState | null>(null);
@@ -55,8 +61,10 @@ async function forgetKeyFromEarlierInstall() {
     // Can't tell: keep whatever key there is.
   }
   if (!isFreshInstall) return;
-  await clearMasterKey();
+  // Marker first: if it can't be written, every launch would look like a fresh
+  // install and wipe the owner's key (letting "ghost" back in). Keep the key then.
   await AsyncStorage.setItem(INSTALL_MARKER, '1');
+  await clearMasterKey();
 }
 
 export function DisguiseProvider({ children }: PropsWithChildren) {
@@ -66,6 +74,18 @@ export function DisguiseProvider({ children }: PropsWithChildren) {
   const [keepCaptureBlocked, setKeepCaptureBlocked] = useState(false);
   const isLockedRef = useRef(isLocked);
   isLockedRef.current = isLocked;
+  // Bumped by every lock. An unlock that was still checking the key when the
+  // app locked (owner swiped home right after tapping OK) must not open Ghost.
+  const lockCount = useRef(0);
+  // Pickers running without auto-lock, and whether the app left meanwhile.
+  const suspended = useRef(0);
+  const leftWhileSuspended = useRef(false);
+
+  const lockNow = useCallback(() => {
+    lockCount.current++;
+    wipeSecretsFromMemory();
+    setIsLocked(true);
+  }, []);
   // Unlocking waits for the install check, so a stale key can't be used.
   const startup = useRef<Promise<void> | null>(null);
 
@@ -84,18 +104,42 @@ export function DisguiseProvider({ children }: PropsWithChildren) {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'background') {
         if (!isLockedRef.current) setKeepCaptureBlocked(true);
-        setIsLocked(true);
+        if (suspended.current > 0) {
+          leftWhileSuspended.current = true;
+          return;
+        }
+        lockNow();
       } else if (state === 'active') {
         setKeepCaptureBlocked(false);
       }
     });
     return () => subscription.remove();
-  }, []);
+  }, [lockNow]);
+
+  const withoutAutoLock = useCallback(
+    async <T,>(task: () => Promise<T>) => {
+      suspended.current++;
+      try {
+        return await task();
+      } finally {
+        suspended.current--;
+        if (suspended.current === 0 && leftWhileSuspended.current) {
+          leftWhileSuspended.current = false;
+          // Came back from the picker to somewhere other than Ghost: lock now.
+          if (AppState.currentState !== 'active') lockNow();
+        }
+      }
+    },
+    [lockNow],
+  );
 
   const unlock = useCallback(async (key: string) => {
+    const startedAt = lockCount.current;
     await startup.current;
     const ok = await verifyMasterKey(key);
     if (!ok) return false;
+    // Locked again (or left the app) while the key was being checked.
+    if (lockCount.current !== startedAt || AppState.currentState !== 'active') return false;
     setIsLocked(false);
     if (key.trim().toLowerCase() === DEFAULT_MASTER_KEY) {
       showAlert(
@@ -108,7 +152,7 @@ export function DisguiseProvider({ children }: PropsWithChildren) {
     return true;
   }, []);
 
-  const lock = useCallback(() => setIsLocked(true), []);
+  const lock = lockNow;
 
   const changeKey = useCallback(async (key: string) => {
     await setMasterKey(key);
@@ -118,8 +162,8 @@ export function DisguiseProvider({ children }: PropsWithChildren) {
   const isCaptureBlocked = !isLocked || keepCaptureBlocked;
 
   const value = useMemo(
-    () => ({ isLocked, isCaptureBlocked, isDefaultKey, unlock, lock, changeKey }),
-    [isLocked, isCaptureBlocked, isDefaultKey, unlock, lock, changeKey],
+    () => ({ isLocked, isCaptureBlocked, isDefaultKey, unlock, lock, changeKey, withoutAutoLock }),
+    [isLocked, isCaptureBlocked, isDefaultKey, unlock, lock, changeKey, withoutAutoLock],
   );
 
   return <DisguiseContext.Provider value={value}>{children}</DisguiseContext.Provider>;
