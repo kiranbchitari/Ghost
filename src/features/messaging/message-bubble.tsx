@@ -1,7 +1,17 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Haptics from 'expo-haptics';
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type TextStyle,
+} from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, { FadeIn, interpolate, useAnimatedStyle, useSharedValue, withTiming, ZoomIn } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -45,6 +55,9 @@ type Props = {
   onReactionsPress?: (message: DisplayMessage) => void;
   // Any single tap on the bubble (closes an open tray).
   onTap?: () => void;
+  // First of a run of messages from the same person (themes with bubble
+  // tails show the tail here and pack the rest of the run closely).
+  isFirstInGroup?: boolean;
 };
 
 const IMAGE_WIDTH = 230;
@@ -75,9 +88,12 @@ export const MessageBubble = memo(function MessageBubble({
   onMoreReactions,
   onReactionsPress,
   onTap,
+  isFirstInGroup = true,
 }: Props) {
   const styles = useThemedStyles(createStyles);
   const { theme } = useAppTheme();
+  const hasTails = !!theme.chat?.tails;
+  const tail = hasTails && isFirstInGroup;
 
   // When a message is deleted, or a view-once photo is opened, keep showing
   // its previous state long enough to burn it away.
@@ -114,15 +130,21 @@ export const MessageBubble = memo(function MessageBubble({
           />
         </View>
       )}
-      <View style={[styles.row, isMine ? styles.rowMine : styles.rowTheirs, isSelected && styles.rowSelected]}>
+      <View
+        style={[
+          styles.row,
+          isMine ? styles.rowMine : styles.rowTheirs,
+          tail && styles.rowGroupStart,
+          isSelected && styles.rowSelected,
+        ]}>
         {burning ? (
           // The wrapper takes the bubble's max width so the text wraps exactly as
           // it did before burning; the bubble then fills it.
           <BurnEffect onDone={finishBurning} style={styles.burnWrapper}>
-            <Bubble message={burning} isMine={isMine} sharedKey={sharedKey} styles={styles} fill />
+            <Bubble message={burning} isMine={isMine} sharedKey={sharedKey} styles={styles} tail={tail} fill />
           </BurnEffect>
         ) : aboutToBurn ? (
-          <Bubble message={aboutToBurn} isMine={isMine} sharedKey={sharedKey} styles={styles} />
+          <Bubble message={aboutToBurn} isMine={isMine} sharedKey={sharedKey} styles={styles} tail={tail} />
         ) : (
           <Bubble
             message={message}
@@ -137,6 +159,7 @@ export const MessageBubble = memo(function MessageBubble({
             onFailedPress={onFailedPress}
             onDoubleTap={canReact && onOpenReactions ? () => onOpenReactions(message) : undefined}
             onTap={onTap}
+            tail={tail}
           />
         )}
       </View>
@@ -325,6 +348,8 @@ type BubbleProps = {
   // Set when the message can be reacted to.
   onDoubleTap?: () => void;
   onTap?: () => void;
+  // Draw a tail at the top corner (themes with tails, first of a run).
+  tail?: boolean;
   fill?: boolean;
 };
 
@@ -341,9 +366,11 @@ function Bubble({
   onFailedPress,
   onDoubleTap,
   onTap,
+  tail = false,
   fill,
 }: BubbleProps) {
   const { theme } = useAppTheme();
+  const chat = theme.chat;
   const lastTapAt = useRef(0);
   const pendingTap = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(pendingTap.current), []);
@@ -366,31 +393,50 @@ function Bubble({
     isRevealed && theme.privacy && { color: theme.privacy.revealedText },
   ];
 
-  let content;
+  // Text, a placeholder, or (plain photos) the picture.
+  let body: { style: StyleProp<TextStyle>; text: string } | null = null;
   if (message.isDeleted) {
-    content = (
-      <Text style={[styles.placeholder, metaStyle]}>
-        🔥 {isMine ? 'You burned this message' : 'This message was burned'}
-      </Text>
-    );
+    body = {
+      style: [styles.placeholder, metaStyle],
+      text: `🔥 ${isMine ? 'You burned this message' : 'This message was burned'}`,
+    };
   } else if (isPhoto && message.view_once) {
+    body = {
+      style: [styles.placeholder, metaStyle],
+      text: message.viewed_at
+        ? '◎ Photo · Opened'
+        : isMine
+          ? '◎ Photo · View once'
+          : '◎ Tap to view photo · View once',
+    };
+  } else if (!isPhoto && message.text === null) {
+    body = { style: [styles.placeholder, metaStyle], text: "Couldn't decrypt this message" };
+  } else if (!isPhoto) {
+    body = { style: textStyle, text: isMasked ? maskText(message.text ?? '') : (message.text ?? '') };
+  }
+
+  const showTicks = isMine && message.isEncrypted && !message.isDeleted && !message.sendState;
+  const burn = message.isDeleted ? null : burnLabel(message);
+  // WhatsApp's trick: the time and ticks sit at the bottom right, and an
+  // invisible copy of them ends the text, so the last line leaves room for
+  // them when it can and wraps below when it can't. Not for "Not sent".
+  const inlineMeta = !!chat?.inlineMeta && message.sendState !== 'failed';
+  const photoOverlay = inlineMeta && isPlainPhoto;
+
+  let content;
+  if (body) {
     content = (
-      <Text style={[styles.placeholder, metaStyle]}>
-        {message.viewed_at
-          ? '◎ Photo · Opened'
-          : isMine
-            ? '◎ Photo · View once'
-            : '◎ Tap to view photo · View once'}
+      <Text style={body.style}>
+        {body.text}
+        {inlineMeta && (
+          <Text style={styles.metaSpacer} accessible={false}>
+            {metaSpacer(meta, burn, showTicks || message.sendState === 'sending')}
+          </Text>
+        )}
       </Text>
     );
-  } else if (isPhoto) {
-    content = (
-      <BubblePhoto message={message} sharedKey={sharedKey} isMasked={isMasked} styles={styles} />
-    );
-  } else if (message.text === null) {
-    content = <Text style={[styles.placeholder, metaStyle]}>Couldn't decrypt this message</Text>;
   } else {
-    content = <Text style={textStyle}>{isMasked ? maskText(message.text) : message.text}</Text>;
+    content = <BubblePhoto message={message} sharedKey={sharedKey} isMasked={isMasked} styles={styles} />;
   }
 
   const canSelect = !message.isDeleted && !message.sendState && !!onSelect;
@@ -442,18 +488,37 @@ function Bubble({
       style={[
         styles.bubble,
         isMine ? styles.bubbleMine : styles.bubbleTheirs,
+        tail && (isMine ? styles.bubbleTailMine : styles.bubbleTailTheirs),
         isPlainPhoto && styles.bubblePhoto,
         fill && styles.bubbleFill,
       ]}>
+      {tail && <View style={isMine ? styles.tailMine : styles.tailTheirs} />}
       {quote && (
         <Pressable
           onPress={quote.targetId && onQuotePress ? () => onQuotePress(quote.targetId!) : undefined}
           disabled={isSelecting}
-          style={[styles.quote, { borderLeftColor: isMine ? styles.textMine.color : styles.textTheirs.color }]}
+          style={[
+            styles.quote,
+            {
+              borderLeftColor: chat
+                ? quote.byMe
+                  ? chat.quoteMine
+                  : chat.quoteTheirs
+                : isMine
+                  ? styles.textMine.color
+                  : styles.textTheirs.color,
+            },
+          ]}
           accessibilityRole="button"
           accessibilityLabel={`Reply to ${quote.author || 'a message'}: ${quote.text}`}>
           {quote.author ? (
-            <Text style={[styles.quoteAuthor, isMine ? styles.textMine : styles.textTheirs]} numberOfLines={1}>
+            <Text
+              style={[
+                styles.quoteAuthor,
+                isMine ? styles.textMine : styles.textTheirs,
+                chat && { color: quote.byMe ? chat.quoteMine : chat.quoteTheirs },
+              ]}
+              numberOfLines={1}>
               {quote.author}
             </Text>
           ) : null}
@@ -463,23 +528,44 @@ function Bubble({
         </Pressable>
       )}
       {content}
-      <View style={styles.metaRow}>
-        <Text style={[styles.meta, metaStyle]}>{meta}</Text>
-        {!message.isDeleted && <BurnCountdown message={message} styles={styles} isMine={isMine} />}
+      <View style={inlineMeta ? (photoOverlay ? styles.metaOverlay : styles.metaFloat) : styles.metaRow}>
+        <Text style={[styles.meta, photoOverlay ? styles.metaOnPhoto : metaStyle]}>{meta}</Text>
+        {burn && (
+          <Text style={[styles.meta, message.burnIn === null ? (photoOverlay ? styles.metaOnPhoto : metaStyle) : styles.burnLive]}>
+            {burn}
+          </Text>
+        )}
         {message.sendState === 'sending' && (
-          <Ionicons name="time-outline" size={12} style={[styles.meta, metaStyle]} accessibilityLabel="Sending" />
+          <Ionicons
+            name="time-outline"
+            size={12}
+            style={[styles.meta, photoOverlay ? styles.metaOnPhoto : metaStyle]}
+            accessibilityLabel="Sending"
+          />
         )}
         {message.sendState === 'failed' && (
           <Text style={[styles.meta, styles.failed]} accessibilityLabel="Not sent. Tap to retry.">
             ⚠ Not sent · Tap to retry
           </Text>
         )}
-        {isMine && message.isEncrypted && !message.isDeleted && !message.sendState && (
-          <Ticks message={message} styles={styles} />
-        )}
+        {showTicks && <Ticks message={message} styles={styles} onPhoto={photoOverlay} />}
       </View>
     </Pressable>
   );
+}
+
+// 🔥 4s while counting down; the timer length (dimmed) while waiting to be read.
+function burnLabel(message: DisplayMessage) {
+  if (message.burn_seconds === null) return null;
+  return `🔥 ${formatBurn(message.burnIn ?? message.burn_seconds)}`;
+}
+
+// Invisible stand-in for the time, burn timer and ticks at the end of the
+// text. Non-breaking spaces keep it in one piece; the leading space lets it
+// wrap to its own line as a whole.
+function metaSpacer(meta: string, burn: string | null, hasIcon: boolean) {
+  const label = [meta, burn].filter(Boolean).join(' ');
+  return ` \u00a0\u00a0${label.replace(/ /g, '\u00a0')}${hasIcon ? '\u00a0\u2003\u2002' : ''}`;
 }
 
 function BubblePhoto({
@@ -512,18 +598,22 @@ function BubblePhoto({
   );
 }
 
-// 🔥 4s while counting down; the timer length (dimmed) while waiting to be read.
-function BurnCountdown({ message, styles, isMine }: { message: DisplayMessage; styles: Styles; isMine: boolean }) {
-  if (message.burn_seconds === null) return null;
-  const metaStyle = isMine ? styles.metaMine : styles.metaTheirs;
-  if (message.burnIn === null) {
-    return <Text style={[styles.meta, metaStyle]}>🔥 {formatBurn(message.burn_seconds)}</Text>;
-  }
-  return <Text style={[styles.meta, styles.burnLive]}>🔥 {formatBurn(message.burnIn)}</Text>;
-}
-
 // ✓ sent · ✓✓ delivered · coloured ✓✓ read
-function Ticks({ message, styles }: { message: DisplayMessage; styles: Styles }) {
+function Ticks({ message, styles, onPhoto = false }: { message: DisplayMessage; styles: Styles; onPhoto?: boolean }) {
+  const { theme } = useAppTheme();
+  if (theme.chat?.tickIcons) {
+    const state = message.read_at ? 'Read' : message.delivered_at ? 'Delivered' : 'Sent';
+    const color =
+      state === 'Read' ? theme.colors.tickRead : onPhoto ? '#ffffff' : theme.colors.tick;
+    return (
+      <MaterialCommunityIcons
+        name={state === 'Sent' ? 'check' : 'check-all'}
+        size={16}
+        color={color}
+        accessibilityLabel={state}
+      />
+    );
+  }
   if (message.read_at) {
     return (
       <Text style={[styles.ticks, styles.ticksRead]} accessibilityLabel="Read">
@@ -547,9 +637,25 @@ function Ticks({ message, styles }: { message: DisplayMessage; styles: Styles })
 
 type Styles = ReturnType<typeof createStyles>;
 
-const createStyles = ({ colors, glow }: AppTheme) =>
-  StyleSheet.create({
-    row: { flexDirection: 'row', paddingVertical: 3, paddingHorizontal: 12 },
+// WhatsApp-style tail: a small triangle continuing the bubble's top edge
+// outwards, its long side slanting back to the bubble.
+const TAIL_WIDTH = 8;
+const TAIL_HEIGHT = 13;
+
+const createStyles = ({ colors, glow, chat }: AppTheme) => {
+  // Hairline shadow for bubbles and chips in themes that use one.
+  const shadow = chat && {
+    shadowColor: chat.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 0.5,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  };
+  const radius = chat?.bubbleRadius ?? 16;
+  return StyleSheet.create({
+    // With tails, a run from one person is packed tight and runs are spaced.
+    row: { flexDirection: 'row', paddingVertical: chat?.tails ? 1 : 3, paddingHorizontal: chat?.tails ? 16 : 12 },
+    rowGroupStart: { marginTop: 6 },
     // A tint across the whole row, like WhatsApp's selection.
     rowSelected: { backgroundColor: `${colors.tint}33` },
     // Revealed behind the message as it is swiped right.
@@ -566,9 +672,10 @@ const createStyles = ({ colors, glow }: AppTheme) =>
       marginBottom: 4,
       paddingVertical: 4,
       paddingHorizontal: 8,
-      borderRadius: 8,
-      borderLeftWidth: 3,
-      backgroundColor: 'rgba(127,127,127,0.18)',
+      borderRadius: chat ? 6 : 8,
+      borderLeftWidth: chat ? 4 : 3,
+      backgroundColor: chat?.quoteBackground ?? 'rgba(127,127,127,0.18)',
+      overflow: 'hidden',
     },
     quoteAuthor: { fontSize: 13, fontWeight: '700' },
     quoteText: { fontSize: 13 },
@@ -614,34 +721,61 @@ const createStyles = ({ colors, glow }: AppTheme) =>
       paddingVertical: 2,
       borderRadius: 12,
       backgroundColor: colors.surface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+      // WhatsApp rings the pill in the wallpaper colour so it sits on the bubble's edge.
+      ...(chat
+        ? { borderWidth: 1.5, borderColor: colors.chatBackground, ...shadow }
+        : { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border }),
     },
     chipEmoji: { fontSize: 14, color: colors.textMuted },
     chipCount: { fontSize: 12, color: colors.textMuted, fontWeight: '600' },
     bubble: {
-      maxWidth: '78%',
-      borderRadius: 16,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      borderWidth: StyleSheet.hairlineWidth,
+      maxWidth: chat ? '80%' : '78%',
+      borderRadius: radius,
+      ...(chat
+        ? { paddingLeft: 9, paddingRight: 8, paddingTop: 6, paddingBottom: 7 }
+        : { paddingHorizontal: 12, paddingVertical: 8, borderWidth: StyleSheet.hairlineWidth }),
     },
     bubbleMine: {
       backgroundColor: colors.bubbleMine,
       borderColor: colors.bubbleMineBorder,
-      borderBottomRightRadius: 4,
+      ...(chat ? shadow : { borderBottomRightRadius: 4 }),
       ...(glow && { shadowColor: glow, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 0 } }),
     },
     bubbleTheirs: {
       backgroundColor: colors.bubbleTheirs,
       borderColor: colors.bubbleTheirsBorder,
-      borderBottomLeftRadius: 4,
+      ...(chat ? shadow : { borderBottomLeftRadius: 4 }),
     },
-    bubblePhoto: { padding: 4, paddingBottom: 6 },
+    // The corner the tail grows from is square.
+    bubbleTailMine: { borderTopRightRadius: 0 },
+    bubbleTailTheirs: { borderTopLeftRadius: 0 },
+    tailMine: {
+      position: 'absolute',
+      top: 0,
+      right: -TAIL_WIDTH,
+      width: 0,
+      height: 0,
+      borderTopWidth: TAIL_HEIGHT,
+      borderTopColor: colors.bubbleMine,
+      borderRightWidth: TAIL_WIDTH,
+      borderRightColor: 'transparent',
+    },
+    tailTheirs: {
+      position: 'absolute',
+      top: 0,
+      left: -TAIL_WIDTH,
+      width: 0,
+      height: 0,
+      borderTopWidth: TAIL_HEIGHT,
+      borderTopColor: colors.bubbleTheirs,
+      borderLeftWidth: TAIL_WIDTH,
+      borderLeftColor: 'transparent',
+    },
+    bubblePhoto: chat ? { padding: 3, paddingBottom: 3 } : { padding: 4, paddingBottom: 6 },
     burnWrapper: { maxWidth: '78%' },
     bubbleFill: { maxWidth: '100%' },
     photoFrame: {
-      borderRadius: 12,
+      borderRadius: chat ? Math.max(radius - 2, 4) : 12,
       overflow: 'hidden',
       alignItems: 'center',
       justifyContent: 'center',
@@ -661,9 +795,34 @@ const createStyles = ({ colors, glow }: AppTheme) =>
       paddingHorizontal: 4,
     },
     meta: { fontSize: 11 },
+    // Inline meta: pinned to the bottom right, over the room the spacer keeps.
+    metaFloat: {
+      position: 'absolute',
+      right: 8,
+      bottom: 4,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3,
+    },
+    metaSpacer: { fontSize: 11, color: 'transparent' },
+    // On a photo: white on a soft dark pill.
+    metaOverlay: {
+      position: 'absolute',
+      right: 8,
+      bottom: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3,
+      paddingHorizontal: 6,
+      paddingVertical: 1,
+      borderRadius: 10,
+      backgroundColor: 'rgba(11,20,26,0.35)',
+    },
+    metaOnPhoto: { color: '#ffffff' },
     metaMine: { color: colors.metaMine },
     metaTheirs: { color: colors.metaTheirs },
     // Negative spacing overlaps the two checks like WhatsApp's double tick.
     ticks: { fontSize: 12, fontWeight: '700', letterSpacing: -4, color: colors.tick, paddingRight: 4 },
     ticksRead: { color: colors.tickRead },
   });
+};

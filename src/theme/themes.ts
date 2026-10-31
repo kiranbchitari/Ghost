@@ -37,6 +37,36 @@ export type ThemeColors = {
   avatarText: string;
 };
 
+// Optional chat details for themes that copy a messenger's look closely.
+// Themes without it keep the default bubbles.
+export type ChatStyle = {
+  bubbleRadius: number;
+  // A small tail on the first bubble of each run from the same person, and
+  // consecutive bubbles packed close together.
+  tails: boolean;
+  // Time and ticks tucked into the end of the last line of text when they fit.
+  inlineMeta: boolean;
+  // Double-check icons instead of ✓✓ text.
+  tickIcons: boolean;
+  // Hairline drop shadow under bubbles, chips and the composer field.
+  shadow: string;
+  // Original doodle pattern drawn over chatBackground.
+  wallpaper: { stroke: string } | null;
+  // The composer floats over the wallpaper instead of sitting on a bar.
+  floatingComposer: boolean;
+  // Notices ("end-to-end encrypted") and day headings as chips.
+  systemChip: { background: string; text: string };
+  dayChip: { background: string; text: string };
+  // Bar and author colour in quotes: your messages, and theirs.
+  quoteMine: string;
+  quoteTheirs: string;
+  quoteBackground: string;
+  // Pill behind the active tab's icon, and the tab icon colours.
+  tabPill: string;
+  tabActive: string;
+  tabInactive: string;
+};
+
 export type AppTheme = {
   name: ThemeName;
   label: string;
@@ -47,6 +77,7 @@ export type AppTheme = {
   glow: string | null;
   // Stealth: mask message text until press-and-hold.
   privacy: { maskMessages: boolean; revealedText: string } | null;
+  chat?: ChatStyle;
 };
 
 const light: AppTheme = {
@@ -132,24 +163,26 @@ const dark: AppTheme = {
   },
 };
 
-// WhatsApp's light look: beige chat wallpaper, light green outgoing bubbles,
-// white incoming bubbles, green accents and blue read ticks.
+// WhatsApp's light look: beige wallpaper with doodles, mint outgoing and white
+// incoming bubbles with tails, time tucked into the last line, blue read
+// ticks, a floating composer and green accents. The doodles are original
+// artwork, not WhatsApp's wallpaper.
 const whatsapp: AppTheme = {
   name: 'whatsapp',
   label: 'WhatsApp',
-  description: 'Familiar green and beige chat style.',
+  description: 'Doodle wallpaper, bubble tails, green accents.',
   isDark: false,
   glow: null,
   privacy: null,
   colors: {
     background: '#ffffff',
     chatBackground: '#efeae2',
-    surface: '#f7f8fa',
+    surface: '#ffffff',
     text: '#111b21',
     textMuted: '#667781',
     border: '#e9edef',
-    tint: '#00a884',
-    accent: '#00a884',
+    tint: '#1daa61',
+    accent: '#1daa61',
     onAccent: '#ffffff',
     danger: '#ea0038',
     onDanger: '#ffffff',
@@ -163,7 +196,7 @@ const whatsapp: AppTheme = {
     metaTheirs: '#667781',
     tick: '#8696a0',
     tickRead: '#53bdeb',
-    codeCard: '#00a884',
+    codeCard: '#1daa61',
     codeCardBorder: 'transparent',
     codeCardText: '#ffffff',
     codeCardMuted: 'rgba(255,255,255,0.85)',
@@ -172,6 +205,23 @@ const whatsapp: AppTheme = {
     placeholder: '#8696a0',
     avatar: '#dfe5e7',
     avatarText: '#54656f',
+  },
+  chat: {
+    bubbleRadius: 8,
+    tails: true,
+    inlineMeta: true,
+    tickIcons: true,
+    shadow: 'rgba(11,20,26,0.13)',
+    wallpaper: { stroke: 'rgba(120,98,64,0.13)' },
+    floatingComposer: true,
+    systemChip: { background: '#ffeecd', text: '#54656f' },
+    dayChip: { background: '#ffffff', text: '#54656f' },
+    quoteMine: '#06cf9c',
+    quoteTheirs: '#7f66ff',
+    quoteBackground: 'rgba(11,20,26,0.05)',
+    tabPill: '#d8fdd2',
+    tabActive: '#111b21',
+    tabInactive: '#54656f',
   },
 };
 

@@ -42,6 +42,7 @@ import { heroFor } from '@/features/profile/heroes';
 import { useMessages, type DisplayMessage } from '@/features/messaging/use-messages';
 import { panicBottomPanel } from '@/features/security/panic-button';
 import { useSession } from '@/hooks/use-session';
+import { ChatWallpaper } from '@/theme/chat-wallpaper';
 import { loadDraft, saveDraft, type Draft } from '@/services/storage/encrypted-drafts';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
@@ -572,6 +573,7 @@ export default function ChatScreen() {
 
   return (
     <Animated.View style={[styles.container, keyboardSpace]}>
+      {theme.chat?.wallpaper && <ChatWallpaper stroke={theme.chat.wallpaper.stroke} />}
       <Stack.Screen
         options={
           selected
@@ -731,6 +733,7 @@ export default function ChatScreen() {
                 onMoreReactions={moreReactions}
                 onReactionsPress={showReactions}
                 onTap={closeReactions}
+                isFirstInGroup={item.isFirstInGroup}
               />
             )
           }
@@ -744,14 +747,16 @@ export default function ChatScreen() {
       )}
 
       {/* Above the composer rather than at the top, which sits under the translucent header. */}
-      <Text style={[styles.notice, error && styles.error]}>
-        {error ??
-          toast ??
-          (isReady && showConnecting ? 'Connecting…' : null) ??
-          (isReady
-            ? `🔒 End-to-end encrypted${burnSummary ? ` · 🔥 ${burnSummary}` : ''}`
-            : 'Setting up encryption…')}
-      </Text>
+      <View style={styles.noticeRow}>
+        <Text style={[styles.notice, error && styles.error]}>
+          {error ??
+            toast ??
+            (isReady && showConnecting ? 'Connecting…' : null) ??
+            (isReady
+              ? `🔒 End-to-end encrypted${burnSummary ? ` · 🔥 ${burnSummary}` : ''}`
+              : 'Setting up encryption…')}
+        </Text>
+      </View>
 
       <View>
         {isAttachOpen && <AttachmentPanel onPick={pick} />}
@@ -938,8 +943,16 @@ export default function ChatScreen() {
   );
 }
 
-const createStyles = ({ colors }: AppTheme) =>
-  StyleSheet.create({
+const createStyles = ({ colors, chat }: AppTheme) => {
+  // Hairline drop shadow for chips and the floating composer (themes with a chat style).
+  const shadow = chat && {
+    shadowColor: chat.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 0.5,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  };
+  return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.chatBackground },
     headerTitle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     timerButton: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 8 },
@@ -948,7 +961,21 @@ const createStyles = ({ colors }: AppTheme) =>
     headerTyping: { color: colors.tint, fontSize: 12, fontStyle: 'italic' },
     // Dims the chat behind the reaction emoji panel; tapping it closes the panel.
     pickerBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.25)' },
-    notice: { color: colors.textMuted, fontSize: 12, textAlign: 'center', paddingVertical: 6 },
+    // A plain line, or a small yellow chip like WhatsApp's encryption notice.
+    noticeRow: chat ? { alignItems: 'center', paddingHorizontal: 16, paddingVertical: 5 } : {},
+    notice: chat
+      ? {
+          color: chat.systemChip.text,
+          fontSize: 12.5,
+          textAlign: 'center',
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          borderRadius: 7.5,
+          overflow: 'hidden',
+          backgroundColor: chat.systemChip.background,
+          ...shadow,
+        }
+      : { color: colors.textMuted, fontSize: 12, textAlign: 'center', paddingVertical: 6 },
     error: { color: colors.danger },
     // Rows pad themselves, so a selected row's tint reaches both edges.
     list: { paddingVertical: 8 },
@@ -958,16 +985,28 @@ const createStyles = ({ colors }: AppTheme) =>
     headerActions: { flexDirection: 'row', alignItems: 'center' },
     loadingOlder: { marginVertical: 12 },
     dayRow: { alignItems: 'center', marginVertical: 10 },
-    dayLabel: {
-      color: colors.textMuted,
-      fontSize: 12,
-      fontWeight: '600',
-      paddingHorizontal: 12,
-      paddingVertical: 4,
-      borderRadius: 10,
-      overflow: 'hidden',
-      backgroundColor: colors.surface,
-    },
+    dayLabel: chat
+      ? {
+          color: chat.dayChip.text,
+          fontSize: 12.5,
+          fontWeight: '500',
+          paddingHorizontal: 12,
+          paddingVertical: 5,
+          borderRadius: 7.5,
+          overflow: 'hidden',
+          backgroundColor: chat.dayChip.background,
+          ...shadow,
+        }
+      : {
+          color: colors.textMuted,
+          fontSize: 12,
+          fontWeight: '600',
+          paddingHorizontal: 12,
+          paddingVertical: 4,
+          borderRadius: 10,
+          overflow: 'hidden',
+          backgroundColor: colors.surface,
+        },
     jumpDown: {
       position: 'absolute',
       right: 14,
@@ -1001,14 +1040,17 @@ const createStyles = ({ colors }: AppTheme) =>
     },
     jumpBadgeText: { color: colors.onAccent, fontSize: 11, fontWeight: '700' },
     headerAction: { paddingHorizontal: 10, paddingVertical: 4 },
-    composer: {
-      gap: 6,
-      paddingHorizontal: 8,
-      paddingTop: 8,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.border,
-      backgroundColor: colors.composer,
-    },
+    // WhatsApp's composer floats over the wallpaper; others sit on a bar.
+    composer: chat?.floatingComposer
+      ? { gap: 6, paddingHorizontal: 6, paddingTop: 2 }
+      : {
+          gap: 6,
+          paddingHorizontal: 8,
+          paddingTop: 8,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          borderTopColor: colors.border,
+          backgroundColor: colors.composer,
+        },
     composerRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
     // The message being replied to, above the field.
     replyBar: {
@@ -1020,11 +1062,12 @@ const createStyles = ({ colors }: AppTheme) =>
       paddingHorizontal: 10,
       borderRadius: 12,
       borderLeftWidth: 4,
-      borderLeftColor: colors.tint,
+      borderLeftColor: chat?.quoteMine ?? colors.tint,
       backgroundColor: colors.input,
+      ...shadow,
     },
     replyBarText: { flex: 1 },
-    replyAuthor: { color: colors.tint, fontSize: 13, fontWeight: '700' },
+    replyAuthor: { color: chat?.quoteMine ?? colors.tint, fontSize: 13, fontWeight: '700' },
     replySnippet: { color: colors.textMuted, fontSize: 14 },
     // WhatsApp-style rounded field holding the emoji, attach and camera buttons.
     pill: {
@@ -1034,9 +1077,8 @@ const createStyles = ({ colors }: AppTheme) =>
       minHeight: 46,
       borderRadius: 23,
       paddingHorizontal: 4,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
       backgroundColor: colors.input,
+      ...(chat?.floatingComposer ? shadow : { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border }),
     },
     pillButton: { width: 38, height: 46, alignItems: 'center', justifyContent: 'center' },
     input: {
@@ -1055,6 +1097,7 @@ const createStyles = ({ colors }: AppTheme) =>
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.accent,
+      ...shadow,
     },
     // The paper plane's visual centre sits left of its box.
     sendIcon: { marginLeft: 3 },
@@ -1062,12 +1105,16 @@ const createStyles = ({ colors }: AppTheme) =>
     // In the screen's bottom padding, which is the emoji panel's height while it is open.
     emojiSlot: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   });
+};
 
 // Shared empty list, so rows without reactions keep a stable prop.
 const NO_REACTIONS: readonly ReactionChip[] = [];
 const REACTION_PANEL_HEIGHT = 320;
 
-type Row = { type: 'day'; key: string; label: string } | { type: 'message'; key: string; message: DisplayMessage };
+type Row =
+  | { type: 'day'; key: string; label: string }
+  // First in a run of messages from the same person on the same day.
+  | { type: 'message'; key: string; message: DisplayMessage; isFirstInGroup: boolean };
 
 function startOfDay(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
@@ -1086,13 +1133,16 @@ function dayLabel(iso: string) {
 function withDayHeadings(messages: DisplayMessage[]): Row[] {
   const rows: Row[] = [];
   let lastDay: number | null = null;
+  let lastSender: string | null = null;
   for (const message of messages) {
     const day = startOfDay(new Date(message.created_at));
     if (day !== lastDay) {
       rows.push({ type: 'day', key: `day-${day}`, label: dayLabel(message.created_at) });
       lastDay = day;
+      lastSender = null;
     }
-    rows.push({ type: 'message', key: message.id, message });
+    rows.push({ type: 'message', key: message.id, message, isFirstInGroup: message.sender_id !== lastSender });
+    lastSender = message.sender_id;
   }
   return rows;
 }

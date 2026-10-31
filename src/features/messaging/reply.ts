@@ -7,6 +7,8 @@ export type Quote = {
   // null when the quoted message isn't on this phone (too old, or burned away).
   targetId: string | null;
   author: string;
+  // The quoted message is yours (some themes colour the quote by author).
+  byMe: boolean;
   text: string;
 };
 
@@ -26,10 +28,11 @@ export function quoteFor(
 ): Quote | null {
   if (!message.reply_to) return null;
   const target = byId.get(message.reply_to);
-  if (!target) return { targetId: null, author: '', text: 'Original message unavailable' };
+  if (!target) return { targetId: null, author: '', byMe: false, text: 'Original message unavailable' };
   return {
     targetId: target.id,
     author: target.sender_id === myId ? 'You' : friendName,
+    byMe: target.sender_id === myId,
     text: describeForQuote(target, mask),
   };
 }

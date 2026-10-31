@@ -34,10 +34,24 @@ rename them before publishing. Migration: `supabase/migrations/20261031130000_av
 
 ### Themes
 
-Settings → Theme: System, Light, Dark, WhatsApp (beige chat background, green bubbles), Ghost
+Settings → Theme: System, Light, Dark, WhatsApp (see below), Ghost
 (spectral, translucent, glowing) and Stealth (anti shoulder-surfing: low contrast, messages masked as
 `••••` until pressed and held). Tokens live in `src/theme/themes.ts`; screens build styles with
 `useThemedStyles(createStyles)`. The choice is saved on the device.
+
+The WhatsApp theme copies WhatsApp's light look closely, through an optional `chat` block on the
+theme (`ChatStyle` in `themes.ts`; themes without it keep the default bubbles):
+
+- **Bubbles:** mint and white bubbles with a tail on the first message of each run, and consecutive
+  messages packed together.
+- **Time and ticks:** tucked into the end of the last line when they fit, otherwise on their own line
+  below. Double-check tick icons, blue once read.
+- **Chat screen:** a doodle wallpaper, white date chips, a yellow encryption notice, and a composer
+  floating over the wallpaper.
+- **Tabs and list:** a green pill behind the active tab, and a search-style code field in the chat list.
+
+The wallpaper doodles are original line art (`src/theme/doodles.ts`), drawn with Skia
+(`src/theme/chat-wallpaper.tsx`); they are not WhatsApp's wallpaper.
 
 In every theme, a blank cover (`src/theme/privacy-cover.tsx`) replaces the app whenever it isn't in
 the foreground, so the app switcher snapshot never shows chats or codes.

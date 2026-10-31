@@ -190,7 +190,7 @@ export default function ChatsScreen() {
   );
 }
 
-const createStyles = ({ colors, glow }: AppTheme) =>
+const createStyles = ({ colors, glow, chat }: AppTheme) =>
   StyleSheet.create({
     screen: { backgroundColor: colors.background },
     header: { padding: 16, gap: 12 },
@@ -212,18 +212,18 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     },
     headerButton: { paddingHorizontal: 16 },
     newChat: { flexDirection: 'row', gap: 8 },
+    // WhatsApp: a borderless grey search-style field and a round-ended button.
     input: {
       flex: 1,
-      borderWidth: 1,
-      borderColor: colors.border,
-      borderRadius: 8,
-      paddingHorizontal: 12,
+      paddingHorizontal: chat ? 16 : 12,
       paddingVertical: 10,
       fontSize: 16,
       color: colors.text,
-      backgroundColor: colors.input,
+      ...(chat
+        ? { borderRadius: 22, backgroundColor: colors.composer }
+        : { borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.input }),
     },
-    button: { backgroundColor: colors.accent, borderRadius: 8, paddingHorizontal: 18, justifyContent: 'center' },
+    button: { backgroundColor: colors.accent, borderRadius: chat ? 22 : 8, paddingHorizontal: 18, justifyContent: 'center' },
     buttonDisabled: { opacity: 0.4 },
     buttonText: { color: colors.onAccent, fontWeight: '600', fontSize: 16 },
     error: { color: colors.danger },
@@ -231,11 +231,11 @@ const createStyles = ({ colors, glow }: AppTheme) =>
     row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 12 },
     rowBody: { flex: 1 },
     rowTop: { flexDirection: 'row', justifyContent: 'space-between' },
-    rowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
+    rowTitle: { fontSize: chat ? 17 : 16, fontWeight: chat ? '500' : '600', color: colors.text },
     rowTime: { color: colors.textMuted, fontSize: 12 },
     rowTimeUnread: { color: colors.accent, fontWeight: '700' },
     rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
-    rowPreview: { flex: 1, color: colors.textMuted },
+    rowPreview: { flex: 1, color: colors.textMuted, ...(chat && { fontSize: 14.5 }) },
     rowDraft: { color: colors.accent, fontWeight: '600' },
     badge: {
       minWidth: 22,
