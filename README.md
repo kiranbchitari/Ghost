@@ -60,9 +60,19 @@ the foreground, so the app switcher snapshot never shows chats or codes.
 
 The **+** button takes a photo or picks one from the library. Photos are resized, encrypted on the
 device with the chat key and uploaded as ciphertext to the private `attachments` bucket
-(`<conversation_id>/<random id>`). Temporary picker/resizer files are deleted immediately, camera
-shots are never saved to Photos, and decrypted images live only in memory
+(`<conversation_id>/<random id>`). Decrypted images live only in memory
 (`src/features/messaging/attachments.ts`).
+
+Photos taken in Ghost never reach the gallery or the Files app. Ghost uses its own camera
+(`src/features/burn-photo/in-app-camera.tsx`, built on `expo-camera`), not the phone's camera app:
+on some Android phones the system camera app saves its own copy to the gallery whatever the
+requesting app asks. The shot is captured straight into memory (`pictureRef`), so no file is
+written. Resizing needs one temporary file in the app's private cache, which is deleted at once;
+any temporary photo files a crash leaves behind are swept on launch and on every lock. Android's
+`WRITE_EXTERNAL_STORAGE` permission is blocked, so the app can't write to shared storage on the
+Android versions that still enforce it. Gallery photos you choose to send are already on the phone
+and are left as they are; only Ghost's temporary copies are deleted. `expo-camera` is a native
+module: rebuild the development build after pulling this change.
 
 - **View once**: the recipient can open it one time with screen capture blocked; on close it burns
   and the file is deleted (`mark_message_viewed`). Senders can't reopen it.

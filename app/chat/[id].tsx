@@ -29,6 +29,7 @@ import { BurnSettingsSheet } from '@/features/burn-mode/burn-settings-sheet';
 import { describeBurn, formatBurn } from '@/features/burn-mode/timer';
 import { ImageViewer } from '@/features/burn-photo/image-viewer';
 import { PhotoComposer } from '@/features/burn-photo/photo-composer';
+import { InAppCamera } from '@/features/burn-photo/in-app-camera';
 import { pickImage, type PickedImage } from '@/features/burn-photo/pick-image';
 import { AttachmentPanel } from '@/features/messaging/attachment-panel';
 import { EmojiPanel } from '@/features/messaging/emoji-panel';
@@ -57,6 +58,8 @@ export default function ChatScreen() {
   const { withoutAutoLock } = useDisguise();
   const isFocused = useIsFocused();
   const [pickedImage, setPickedImage] = useState<PickedImage | null>(null);
+  // Ghost's own camera is open (photos never touch the gallery or a file).
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
   const {
     messages,
@@ -80,7 +83,7 @@ export default function ChatScreen() {
     eraseForEveryone,
     // Read receipts only while the chat itself is on screen: not under the
     // photo composer or viewer, and not with another screen on top.
-  } = useMessages(id, { isVisible: isFocused && !pickedImage && !viewingId });
+  } = useMessages(id, { isVisible: isFocused && !pickedImage && !viewingId && !isCameraOpen });
   const [isBurnSheetOpen, setIsBurnSheetOpen] = useState(false);
   const burnSummary = settings && describeBurn(settings.burn_seconds, settings.burn_mode);
   const viewing = messages.find((m) => m.id === viewingId) ?? null;
@@ -565,9 +568,16 @@ export default function ChatScreen() {
 
   function pick(source: 'camera' | 'library') {
     setIsAttachOpen(false);
-    // The camera and photo picker are separate screens on Android: leaving for
-    // them mustn't lock Ghost (and lose the photo).
-    withoutAutoLock(() => pickImage(source))
+    if (source === 'camera') {
+      // Ghost's own camera, not the phone's camera app (which on some phones
+      // also saves a copy to the gallery).
+      Keyboard.dismiss();
+      setIsCameraOpen(true);
+      return;
+    }
+    // The photo picker is a separate screen on Android: leaving for it
+    // mustn't lock Ghost (and lose the photo).
+    withoutAutoLock(() => pickImage())
       .then((image) => image && setPickedImage(image))
       .catch((e: Error) => showError("Couldn't open photos", e));
   }
@@ -1027,6 +1037,16 @@ export default function ChatScreen() {
             />
           </View>
         </>
+      )}
+
+      {isCameraOpen && (
+        <InAppCamera
+          onClose={() => setIsCameraOpen(false)}
+          onCapture={(image) => {
+            setIsCameraOpen(false);
+            setPickedImage(image);
+          }}
+        />
       )}
 
       {pickedImage && (

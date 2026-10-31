@@ -8,6 +8,7 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { DialogHost } from '@/components/dialog';
 import { DisguiseProvider, useDisguise } from '@/features/disguise/disguise-provider';
 import { SnakeGame } from '@/features/disguise/snake-game';
+import { sweepTemporaryPhotos } from '@/features/burn-photo/pick-image';
 import { useDeliveryReceipts } from '@/features/messaging/use-delivery-receipts';
 import { ConnectScreen } from '@/features/security/connect-screen';
 import { PanicButton } from '@/features/security/panic-button';
@@ -30,6 +31,12 @@ function RootNavigator() {
   }, [userId]);
 
   useDeliveryReceipts(userId);
+
+  // Temporary photo files a crash or force-close left behind (they're in the
+  // app's private cache, never the gallery, but shouldn't linger either).
+  useEffect(() => {
+    sweepTemporaryPhotos();
+  }, []);
 
   // Without a session nothing is routable. Gating outside the router (rather
   // than with Stack.Protected) means a new identity always starts from a

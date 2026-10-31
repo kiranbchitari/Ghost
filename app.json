@@ -22,6 +22,9 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO"
+      ],
+      "blockedPermissions": [
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -35,7 +38,17 @@
         "expo-image-picker",
         {
           "photosPermission": "Ghost needs your photos so you can share them in encrypted chats.",
-          "cameraPermission": "Ghost needs the camera so you can take photos to share in encrypted chats."
+          "cameraPermission": "Ghost needs the camera so you can take photos to share in encrypted chats. Photos are never saved to your gallery.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Ghost needs the camera so you can take photos to share in encrypted chats. Photos are never saved to your gallery.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
         }
       ]
     ],

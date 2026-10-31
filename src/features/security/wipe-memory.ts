@@ -1,4 +1,5 @@
 import { clearDialogs } from '@/components/dialog';
+import { sweepTemporaryPhotos } from '@/features/burn-photo/pick-image';
 import { clearDecryptedImages } from '@/features/messaging/attachments';
 import { clearDeviceKeyCache } from '@/services/encryption/device-keys';
 
@@ -13,7 +14,7 @@ export function onBeforeWipe(callback: () => void) {
 }
 
 // Everything secret Ghost holds in memory: keys (identity, chats, drafts),
-// decrypted photos, and any open dialog (whose buttons could still act on a
+// decrypted photos, leftover temporary photo files, and any open dialog (whose buttons could still act on a
 // chat). Called whenever Ghost locks, so nothing outlives the lock.
 export function wipeSecretsFromMemory() {
   beforeWipe.forEach((callback) => {
@@ -26,4 +27,6 @@ export function wipeSecretsFromMemory() {
   clearDeviceKeyCache();
   clearDecryptedImages();
   clearDialogs();
+  // And any temporary photo file a crash or interruption left in the cache.
+  sweepTemporaryPhotos();
 }
