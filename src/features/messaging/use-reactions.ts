@@ -14,6 +14,9 @@ export type ReactionChip = { userId: string; emoji: string; isMine: boolean };
 const MAX_EMOJI_LENGTH = 32;
 // Message ids per request, to keep the query string short.
 const CHUNK = 100;
+// New ids are gathered for this long and fetched together, so a burst of
+// incoming messages costs one request rather than one each.
+const BATCH_MS = 300;
 
 const rowKey = (messageId: string, userId: string) => `${messageId}:${userId}`;
 
@@ -74,6 +77,8 @@ export function useReactions(
               return next;
             });
           } catch (e) {
+            // Not fetched after all: ask again with the next batch or reconnect.
+            chunk.forEach((id) => fetched.current.delete(id));
             if (!hasWarned.current) console.warn('Loading reactions failed:', (e as Error).message);
             hasWarned.current = true;
           }
@@ -83,11 +88,15 @@ export function useReactions(
     [conversationId],
   );
 
-  // Only messages we haven't asked about yet: a new one, or an older page.
+  // Only messages we haven't asked about yet: new ones, or an older page,
+  // gathered briefly so a burst becomes one request.
   const idsKey = messageIds.join(',');
   useEffect(() => {
-    const fresh = idsRef.current.filter((id) => !fetched.current.has(id));
-    if (fresh.length) fetchFor(fresh);
+    const timer = setTimeout(() => {
+      const fresh = idsRef.current.filter((id) => !fetched.current.has(id));
+      if (fresh.length) fetchFor(fresh);
+    }, BATCH_MS);
+    return () => clearTimeout(timer);
   }, [idsKey, fetchFor]);
 
   useEffect(() => {
@@ -96,7 +105,6 @@ export function useReactions(
       if (!row.message_id || !row.user_id) return;
       setRow(row, rowKey(row.message_id, row.user_id));
     };
-    let hasJoined = false;
     const filter = `conversation_id=eq.${conversationId}`;
     const channel = supabase
       .channel(`reactions:${conversationId}`)
@@ -104,10 +112,12 @@ export function useReactions(
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'message_reactions', filter }, apply)
       .subscribe((status) => {
         if (status !== 'SUBSCRIBED') return;
-        // The first join needs nothing: messages fetch their own reactions as
-        // they load. Back after a drop, catch up on everything loaded.
-        if (hasJoined && fetched.current.size) fetchFor([...fetched.current]);
-        hasJoined = true;
+        // Live updates only flow from here on: catch up on whatever changed
+        // before (including between the first fetch and this join), for the
+        // messages still loaded. Ones that burned or were erased are dropped.
+        const loaded = new Set(idsRef.current);
+        for (const id of fetched.current) if (!loaded.has(id)) fetched.current.delete(id);
+        if (fetched.current.size) fetchFor([...fetched.current]);
       });
     return () => {
       supabase.removeChannel(channel);

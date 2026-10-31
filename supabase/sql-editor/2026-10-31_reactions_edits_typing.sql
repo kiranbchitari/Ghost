@@ -1,17 +1,19 @@
 -- Reactions, message edits and typing indicators, in one script for the
 -- Supabase dashboard: SQL Editor → New query → paste all of this → Run.
 --
--- Same changes as these migrations, in this order:
+-- Same end result as these migrations, in this order:
 --   supabase/migrations/20261031180000_reactions.sql
 --   supabase/migrations/20261031190000_message_edits.sql
 --   supabase/migrations/20261031200000_typing_indicators.sql
+--   supabase/migrations/20261031210000_burn_checks.sql
+-- The migrations are the source of truth: change them first, then this copy.
 --
 -- Safe to run more than once. It assumes the earlier migrations (messaging
 -- through unread counts) are already applied.
 --
 -- If you later switch to `supabase db push`, first mark these three as applied
 -- so the CLI doesn't run them again:
---   npx supabase migration repair --status applied 20261031180000 20261031190000 20261031200000
+--   npx supabase migration repair --status applied 20261031180000 20261031190000 20261031200000 20261031210000
 
 begin;
 
@@ -64,7 +66,9 @@ begin
   select m.conversation_id into convo
   from public.messages m
   where m.id = p_message_id
-    and m.deleted_at is null;
+    and m.deleted_at is null
+    -- Burned means gone, even before the sweep deletes it.
+    and coalesce(public.message_burns_at(m) > now(), true);
 
   if convo is null or not public.is_conversation_member(convo) then
     raise exception 'Message not found';
@@ -147,6 +151,7 @@ begin
     and m.deleted_at is null
     and m.ciphertext is not null
     and m.created_at > now() - interval '5 minutes 30 seconds'
+    and coalesce(public.message_burns_at(m) > now(), true)
   returning m.edited_at into stamp;
 
   if stamp is null then

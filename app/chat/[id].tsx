@@ -88,6 +88,10 @@ export default function ChatScreen() {
   // Swiped (or chosen) message the next one replies to.
   const [replyToId, setReplyToId] = useState<string | null>(null);
   const replyTo = replyToId ? (byId.get(replyToId) ?? null) : null;
+  // Themes with a chat style colour the reply bar by whose message it quotes,
+  // like the quote in the sent bubble.
+  const replyColor =
+    theme.chat && replyTo ? (replyTo.sender_id === myId ? theme.chat.quoteMine : theme.chat.quoteTheirs) : null;
   // Briefly tinted after jumping to it from a quote.
   const [flashId, setFlashId] = useState<string | null>(null);
   // Short confirmation shown in place of the encryption notice.
@@ -116,6 +120,9 @@ export default function ChatScreen() {
   // iOS doesn't shrink a multiline input when its text is cleared, so after a
   // send the input is remounted (and refocused) to start again at one line.
   const [composerKey, setComposerKey] = useState(0);
+  // Whether the remounted input should take focus: yes after sending, not
+  // after cancelling an edit (that would pop the keyboard back up).
+  const refocusOnRemount = useRef(true);
   const insets = useSafeAreaInsets();
   // Like WhatsApp, the composer rides up with the keyboard frame by frame. The
   // screen always reaches the bottom of the window (Android is edge-to-edge),
@@ -242,7 +249,7 @@ export default function ChatScreen() {
         return true;
       }
       if (editingId && !isEmojiOpen && !isAttachOpen) {
-        finishEditing();
+        if (!isSavingEdit) finishEditing();
         return true;
       }
       setIsAttachOpen(false);
@@ -357,6 +364,11 @@ export default function ChatScreen() {
   const startReply = useCallback((message: DisplayMessage) => {
     setSelectedId(null);
     setReactingId(null);
+    // An edit can't become a reply; don't quietly drop the choice either.
+    if (editingIdRef.current) {
+      setToast('Finish editing first');
+      return;
+    }
     setReplyToId(message.id);
     inputRef.current?.focus();
   }, []);
@@ -389,12 +401,18 @@ export default function ChatScreen() {
     [react],
   );
 
-  const moreReactions = useCallback((message: DisplayMessage) => {
-    setReactingId(null);
-    setSelectedId(null);
-    Keyboard.dismiss();
-    setReactionPickerId(message.id);
-  }, []);
+  const moreReactions = useCallback(
+    (message: DisplayMessage) => {
+      setReactingId(null);
+      setSelectedId(null);
+      Keyboard.dismiss();
+      // One emoji panel at a time: the reaction panel takes the composer's place.
+      emojiSpace.value = 0;
+      setIsEmojiOpen(false);
+      setReactionPickerId(message.id);
+    },
+    [emojiSpace],
+  );
 
   // Who reacted with what; yours can be taken back from here. Stealth keeps
   // the emoji masked here too (hold the reactions to see them).
@@ -439,7 +457,8 @@ export default function ChatScreen() {
   }
 
   // Leaves editing and brings back the draft that was set aside.
-  function finishEditing() {
+  function finishEditing({ refocus = false } = {}) {
+    refocusOnRemount.current = refocus;
     const saved = setAside.current;
     setAside.current = null;
     setEditingId(null);
@@ -570,7 +589,7 @@ export default function ChatScreen() {
       setIsSavingEdit(true);
       editMessage(target.id, body)
         .then(() => {
-          if (editingIdRef.current === target.id) finishEditing();
+          if (editingIdRef.current === target.id) finishEditing({ refocus: true });
         })
         .catch((e: Error) => showError("Couldn't edit message", e))
         .finally(() => setIsSavingEdit(false));
@@ -589,6 +608,7 @@ export default function ChatScreen() {
     stopTyping();
     setDraft('');
     setReplyToId(null);
+    refocusOnRemount.current = true;
     setComposerKey((k) => k + 1);
     // Sending always brings you back down to your message.
     isNearBottom.current = true;
@@ -815,7 +835,11 @@ export default function ChatScreen() {
                 </Text>
               </View>
               <Pressable
-                onPress={finishEditing}
+                // Not while the edit is on its way: if the server refused it,
+                // the new text would be gone.
+                onPress={() => finishEditing()}
+                disabled={isSavingEdit}
+                style={isSavingEdit && styles.sendDisabled}
                 hitSlop={10}
                 accessibilityRole="button"
                 accessibilityLabel="Cancel editing">
@@ -823,14 +847,17 @@ export default function ChatScreen() {
               </Pressable>
             </View>
           )}
-          {replyTo && !editing && (
-            <View style={styles.replyBar}>
+          {/* Also when the quoted message isn't here (a restored draft's reply
+              to a message that burned or isn't loaded): it says so, and the
+              reply can still be cancelled. */}
+          {replyToId && !editing && (
+            <View style={[styles.replyBar, replyColor && { borderLeftColor: replyColor }]}>
               <View style={styles.replyBarText}>
-                <Text style={styles.replyAuthor} numberOfLines={1}>
-                  {replyTo.sender_id === myId ? 'You' : friendName}
+                <Text style={[styles.replyAuthor, replyColor && { color: replyColor }]} numberOfLines={1}>
+                  {replyTo ? (replyTo.sender_id === myId ? 'You' : friendName) : 'Reply'}
                 </Text>
                 <Text style={styles.replySnippet} numberOfLines={1}>
-                  {describeForQuote(replyTo, mask)}
+                  {replyTo ? describeForQuote(replyTo, mask) : 'Original message unavailable'}
                 </Text>
               </View>
               <Pressable
@@ -860,7 +887,7 @@ export default function ChatScreen() {
                 ref={inputRef}
                 key={composerKey}
                 // Refocus after a send, unless the emoji panel is in use.
-                autoFocus={composerKey > 0 && !isEmojiOpen}
+                autoFocus={composerKey > 0 && refocusOnRemount.current && !isEmojiOpen}
                 style={styles.input}
                 placeholder="Message"
                 placeholderTextColor={theme.colors.placeholder}

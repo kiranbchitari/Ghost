@@ -27,6 +27,7 @@ import {
   removeUploadedImage,
 } from '@/features/messaging/attachments';
 import { openContent, type MessageContent } from '@/features/messaging/crypto';
+import { noteServerTime } from '@/features/messaging/edit';
 import { useAppState } from '@/hooks/use-app-state';
 import { useSession } from '@/hooks/use-session';
 import { encrypt, randomUuid } from '@/services/encryption/box';
@@ -183,7 +184,7 @@ export function useMessages(conversationId: string) {
       );
       // An edit whose new text didn't come with the change: fetch it.
       const known = messagesRef.current.find((m) => m.id === update.id);
-      if (known && isNewerEdit(update, known) && !(update.ciphertext && update.nonce)) {
+      if (known && !update.deleted_at && isNewerEdit(update, known) && !(update.ciphertext && update.nonce)) {
         getMessage(update.id)
           .then((fresh) => fresh && setMessages((prev) => merge([fresh], prev)))
           .catch((e: Error) => console.warn('Loading edited message failed:', e.message));
@@ -355,10 +356,13 @@ export function useMessages(conversationId: string) {
   }, [messages, pending, sharedKey, expiredIds, now, conversationId, userId]);
 
   const deliver = useCallback(
-    async (message: PendingMessage) => {
+    // isFirstAttempt: a retry can get back the copy an earlier attempt stored,
+    // whose timestamp says nothing about the clocks now.
+    async (message: PendingMessage, isFirstAttempt = false) => {
       if (!sharedKey) return;
       setPending((prev) => prev.map((p) => (p.id === message.id ? { ...p, state: 'sending' } : p)));
       try {
+        const sentAt = Date.now();
         const stored = await sendMessage(
           conversationId,
           encrypt(message.text, sharedKey),
@@ -366,6 +370,7 @@ export function useMessages(conversationId: string) {
           message.replyTo,
           message.id,
         );
+        if (isFirstAttempt) noteServerTime(stored.created_at, sentAt, Date.now());
         setMessages((prev) => merge([stored], prev));
         setPending((prev) => prev.filter((p) => p.id !== message.id));
       } catch (e) {
@@ -389,7 +394,7 @@ export function useMessages(conversationId: string) {
         state: 'sending',
       };
       setPending((prev) => [...prev, message]);
-      deliver(message);
+      deliver(message, true);
     },
     [deliver, sharedKey],
   );
@@ -409,7 +414,7 @@ export function useMessages(conversationId: string) {
   // Failed sends are retried by themselves once the connection is back.
   useEffect(() => {
     if (!isConnected) return;
-    pending.filter((p) => p.state === 'failed').forEach(deliver);
+    pending.filter((p) => p.state === 'failed').forEach((p) => deliver(p));
     // Only when the connection comes back, not on every pending change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected]);
@@ -450,10 +455,19 @@ export function useMessages(conversationId: string) {
           ),
         );
       } catch (e) {
+        // The edit may have been saved even though the reply was lost (a
+        // dropped connection): ask the server what it has before undoing.
+        const stored = await getMessage(messageId).catch(() => null);
+        if (stored?.ciphertext === encrypted.ciphertext) {
+          setMessages((prev) => merge([stored], prev));
+          return;
+        }
         setMessages((prev) =>
           prev.map((m) =>
             m.id === messageId && m.ciphertext === encrypted.ciphertext
-              ? { ...m, ciphertext: original.ciphertext, nonce: original.nonce, edited_at: original.edited_at }
+              ? stored
+                ? { ...m, ciphertext: stored.ciphertext, nonce: stored.nonce, edited_at: stored.edited_at }
+                : { ...m, ciphertext: original.ciphertext, nonce: original.nonce, edited_at: original.edited_at }
               : m,
           ),
         );
