@@ -7,6 +7,7 @@ import { Board, ITEM_ICONS } from '@/features/disguise/game/board';
 import { MAZE_LEVELS } from '@/features/disguise/game/levels';
 import { clock, GameButton, Icon, pad, useLook } from '@/features/disguise/game/look';
 import { dailyChallenge, dailyTitle, summarize, type GameSummary, type Rewards } from '@/features/disguise/game/progress';
+import { useSounds, type SoundName } from '@/features/disguise/game/sounds';
 import {
   newGame,
   POWER_KINDS,
@@ -18,6 +19,7 @@ import {
   type Direction,
   type GameConfig,
   type GameState,
+  type ItemKind,
   type RecordedTurn,
   type Snake,
 } from '@/features/disguise/snake-logic';
@@ -25,12 +27,16 @@ import {
 // How far the finger travels (in points) before its direction becomes a turn.
 const STEER_DISTANCE = 22;
 
+// Power-ups all share the 'power' sound.
+const EAT_SOUNDS: Partial<Record<ItemKind, SoundName>> = { apple: 'eat', cherry: 'bonus', golden: 'golden', poison: 'poison' };
+
 // Everything about a game except the board's rows, which come from the space on screen.
 export type GameSetup = Omit<GameConfig, 'rows' | 'seed'> & { seed?: number };
 
 export function Play({
   setup,
   isActive,
+  sound,
   vibration,
   best,
   onGameOver,
@@ -41,6 +47,7 @@ export function Play({
   setup: GameSetup;
   // False while another screen covers it: the game waits, paused.
   isActive: boolean;
+  sound: boolean;
   vibration: boolean;
   best: number;
   onGameOver: (summary: GameSummary) => Rewards;
@@ -97,9 +104,12 @@ export function Play({
       ).catch(done);
   };
 
+  const playSound = useSounds(sound);
+
   const finish = (state: GameState) => {
     setIsRunning(false);
     vibrate(state.outcome === 'cleared' ? 'success' : 'error');
+    playSound(state.outcome === 'crash' ? 'crash' : 'win');
     const summary = summarize(state, turns.current);
     setRewards({ summary, rewards: onGameOver(summary) });
   };
@@ -107,6 +117,8 @@ export function Play({
   finishRef.current = finish;
   const vibrateRef = useRef(vibrate);
   vibrateRef.current = vibrate;
+  const playSoundRef = useRef(playSound);
+  playSoundRef.current = playSound;
 
   // The loop: each move schedules the next, since power-ups and Survival change the pace.
   useEffect(() => {
@@ -118,9 +130,15 @@ export function Play({
       const { state, events } = step(current);
       apply(state);
       for (const e of events) {
-        if (e.type === 'eat') vibrateRef.current(e.kind === 'apple' ? 'light' : e.kind === 'poison' ? 'warning' : 'success');
-        else if (e.type === 'saved') {
-          if (state.tick - lastSaved.current > 1) vibrateRef.current('warning');
+        if (e.type === 'eat') {
+          vibrateRef.current(e.kind === 'apple' ? 'light' : e.kind === 'poison' ? 'warning' : 'success');
+          // The last bite of a game is drowned out by the game over sound.
+          if (!state.isOver) playSoundRef.current(EAT_SOUNDS[e.kind] ?? 'power');
+        } else if (e.type === 'saved') {
+          if (state.tick - lastSaved.current > 1) {
+            vibrateRef.current('warning');
+            playSoundRef.current('shield');
+          }
           lastSaved.current = state.tick;
         }
       }

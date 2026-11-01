@@ -62,10 +62,10 @@ const SIZES = { small: 14, medium: 18, large: 24 } as const;
 type Speed = keyof typeof SPEEDS;
 type Size = keyof typeof SIZES;
 type Walls = 'solid' | 'wrap';
-type Settings = { vibration: boolean; speed: Speed; walls: Walls; size: Size };
+type Settings = { sound: boolean; vibration: boolean; speed: Speed; walls: Walls; size: Size };
 
 const SETTINGS_KEY = 'snake.settings';
-const DEFAULT_SETTINGS: Settings = { vibration: true, speed: 'normal', walls: 'solid', size: 'medium' };
+const DEFAULT_SETTINGS: Settings = { sound: true, vibration: true, speed: 'normal', walls: 'solid', size: 'medium' };
 const MAX_NAME = 12;
 
 async function loadSettings(): Promise<Settings> {
@@ -215,6 +215,7 @@ function Game({ profile, setProfile }: { profile: Profile; setProfile: (p: Profi
             key={gameKey}
             setup={setup}
             isActive={screen === 'play'}
+            sound={settings.sound}
             vibration={settings.vibration}
             best={profile.stats.best[setup.mode] ?? 0}
             onGameOver={onGameOver}
@@ -330,6 +331,17 @@ function GameSettings({
   return (
     <KeyboardAwareScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled" bottomOffset={24}>
       <Header title="SETTINGS" onBack={onBack} />
+
+      <View style={s.settingRow}>
+        <Text style={s.settingLabel}>SOUND</Text>
+        <Pressable
+          onPress={() => onChange({ ...settings, sound: !settings.sound })}
+          style={s.toggle}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: settings.sound }}>
+          <Text style={s.toggleText}>{settings.sound ? 'ON' : 'OFF'}</Text>
+        </Pressable>
+      </View>
 
       <View style={s.settingRow}>
         <Text style={s.settingLabel}>VIBRATION</Text>

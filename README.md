@@ -126,7 +126,9 @@ The game is a full Snake game in its own right (`src/features/disguise/game/`, e
 `snake-logic.ts`): Classic, Time Attack (120 s), Maze (12 levels with stars), Survival (obstacles and
 a rising pace) and Two Player on one phone (bottom half steers player 1, top half player 2). Food
 comes as apples (+1), cherries (+3), golden apples (+10) and poison (-5), plus Speed, Shield, Magnet
-and Phase power-ups with on-screen timers. Around that: pause/resume, a game over screen with stats,
+and Phase power-ups with on-screen timers. Chiptune sound effects (eating, power-ups, shield hits,
+crashing, clearing a level; Settings → Sound) mix with other audio and stay quiet on iOS when the
+phone is on silent. Around that: pause/resume, a game over screen with stats,
 XP and levels, achievements, three daily missions, a daily challenge (same board for everyone that
 day) with a play streak, unlockable snake skins and colour themes, a local leaderboard with a player
 name, sharing a score (plain text through the system share sheet), and a replay of the best Classic
@@ -146,7 +148,8 @@ Ghost. A forgotten key has no recovery other than reinstalling, which wipes ever
 back the starting key; because the iOS keychain survives an uninstall, a fresh install (no
 AsyncStorage marker) drops any master key left behind. Icons are generated:
 `python3 scripts/make-snake-icons.py assets` redraws `assets/icon.png`, the `android-icon-*.png`
-files, the splash icon and the favicon.
+files, the splash icon and the favicon. `python3 scripts/make-snake-sounds.py assets/sounds` remakes
+the game's sound effects.
 
 ### Receipts
 
