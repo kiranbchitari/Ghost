@@ -132,5 +132,28 @@ export function mazeWalls(cols: number, rows: number, level: number): Point[] {
   for (let y = startY - 1; y <= startY + 1; y++) {
     for (let x = 0; x <= startX + 6; x++) cells.delete(`${x},${y}`);
   }
+  // On unusual board shapes a level can seal off a pocket. Fill any cell the
+  // snake can't reach, so food never appears where it can't be eaten.
+  const reached = new Set([`${startX},${startY}`]);
+  const queue: Point[] = [{ x: startX, y: startY }];
+  while (queue.length) {
+    const p = queue.pop()!;
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const x = p.x + dx;
+      const y = p.y + dy;
+      const k = `${x},${y}`;
+      if (x < 0 || y < 0 || x >= cols || y >= rows || cells.has(k) || reached.has(k)) continue;
+      reached.add(k);
+      queue.push({ x, y });
+    }
+  }
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) if (!reached.has(`${x},${y}`)) add(x, y);
+  }
   return [...cells.values()];
 }

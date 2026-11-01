@@ -381,8 +381,9 @@ export function finishGame(
   let daily = profile.daily.date === date ? profile.daily : { date, best: 0, completed: false };
   let dailyCompleted = false;
   if (game.mode === 'daily') {
-    const challenge = dailyChallenge(date);
-    const success = game.score >= challenge.target;
+    // The target the game was started with (it may have run past midnight).
+    const target = game.config.target ?? dailyChallenge(date).target;
+    const success = game.score >= target;
     if (success && !daily.completed) {
       dailyCompleted = true;
       lines.push(['Daily challenge', DAILY_XP]);

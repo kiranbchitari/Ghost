@@ -59,6 +59,8 @@ export function Play({
   const [rewards, setRewards] = useState<{ summary: GameSummary; rewards: Rewards } | null>(null);
   const turns = useRef<RecordedTurn[]>([]);
   const playHeight = useRef(0);
+  // Last move a shield saved the snake, so passing through a body buzzes once, not every move.
+  const lastSaved = useRef(-10);
 
   const apply = (next: GameState) => {
     gameRef.current = next;
@@ -117,7 +119,10 @@ export function Play({
       apply(state);
       for (const e of events) {
         if (e.type === 'eat') vibrateRef.current(e.kind === 'apple' ? 'light' : e.kind === 'poison' ? 'warning' : 'success');
-        else if (e.type === 'saved') vibrateRef.current('warning');
+        else if (e.type === 'saved') {
+          if (state.tick - lastSaved.current > 1) vibrateRef.current('warning');
+          lastSaved.current = state.tick;
+        }
       }
       if (state.isOver) {
         finishRef.current(state);
@@ -369,7 +374,7 @@ function GameOver({
   if (summary.cleared) title = 'LEVEL CLEARED';
   else if (isDuel) title = summary.winner === null ? 'DRAW' : `PLAYER ${summary.winner + 1} WINS`;
   else if (game.outcome === 'time') title = "TIME'S UP";
-  const daily = summary.mode === 'daily' ? dailyChallenge() : null;
+  const target = summary.mode === 'daily' ? (summary.config.target ?? dailyChallenge().target) : null;
 
   const share = () => {
     Share.share({ message: shareText(summary) }).catch(() => {});
@@ -399,9 +404,9 @@ function GameOver({
             ))}
           </View>
         )}
-        {daily && (
+        {target !== null && (
           <Text style={s.text}>
-            {summary.score >= daily.target ? 'CHALLENGE COMPLETE' : `TARGET ${daily.target} — ${daily.target - summary.score} SHORT`}
+            {summary.score >= target ? 'CHALLENGE COMPLETE' : `TARGET ${target} — ${target - summary.score} SHORT`}
           </Text>
         )}
       </View>

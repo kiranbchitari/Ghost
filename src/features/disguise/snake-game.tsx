@@ -278,6 +278,8 @@ function GameSettings({
   const { unlock } = useDisguise();
   const { session } = useSession();
   const [name, setName] = useState(playerName);
+  const latestName = useRef(playerName);
+  latestName.current = playerName;
   const [code, setCode] = useState('');
   const [codeMessage, setCodeMessage] = useState<string | null>(null);
   const [isChecking, setIsChecking] = useState(false);
@@ -322,7 +324,7 @@ function GameSettings({
   const saveName = () => {
     const clean = name.trim().toUpperCase().slice(0, MAX_NAME) || DEFAULT_PROFILE.name;
     setName(clean);
-    if (clean !== playerName) onPlayerName(clean);
+    if (clean !== latestName.current) onPlayerName(clean);
   };
 
   return (
@@ -379,7 +381,13 @@ function GameSettings({
       <TextInput
         style={[s.input, { flex: 0 }]}
         value={name}
-        onChangeText={(text) => setName(text.slice(0, MAX_NAME))}
+        onChangeText={(text) => {
+          const next = text.slice(0, MAX_NAME);
+          setName(next);
+          // Saved as it's typed, so leaving the screen mid-edit keeps it.
+          const clean = next.trim().toUpperCase();
+          if (clean) onPlayerName(clean);
+        }}
         onBlur={saveName}
         onSubmitEditing={saveName}
         placeholder="PLAYER"
