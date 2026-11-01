@@ -122,6 +122,19 @@ SecureStore, so restarting the app doesn't reset it. Every lock (background, Loc
 wipes keys, decrypted photos and open dialogs from memory. The camera and photo picker don't count
 as leaving the app (on Android they are separate screens), so attaching a photo doesn't lock Ghost.
 
+The game is a full Snake game in its own right (`src/features/disguise/game/`, engine in
+`snake-logic.ts`): Classic, Time Attack (120 s), Maze (12 levels with stars), Survival (obstacles and
+a rising pace) and Two Player on one phone (bottom half steers player 1, top half player 2). Food
+comes as apples (+1), cherries (+3), golden apples (+10) and poison (-5), plus Speed, Shield, Magnet
+and Phase power-ups with on-screen timers. Around that: pause/resume, a game over screen with stats,
+XP and levels, achievements, three daily missions, a daily challenge (same board for everyone that
+day) with a play streak, unlockable snake skins and colour themes, a local leaderboard with a player
+name, sharing a score (plain text through the system share sheet), and a replay of the best Classic
+run (the engine is seeded and deterministic, so the seed and turns rebuild the run exactly). All of
+it stays on the phone under the game's own `snake.*` AsyncStorage keys; nothing goes to Supabase,
+nothing on screen mentions Ghost, and Reset game data erases all of it as well. The Redeem code and
+Reset game data behaviour is unchanged.
+
 Until a master key is set, the starting key `ghost` opens Ghost, which then nudges the person to
 set their own (Settings → Game disguise; `ghost` itself isn't accepted as a key). Only a salted,
 stretched SHA-512 hash of the key is kept, in SecureStore (`src/services/security/master-key.ts`).
