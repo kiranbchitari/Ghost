@@ -172,7 +172,8 @@ Migration: `supabase/migrations/20261031180000_reactions.sql`.
 ### Typing indicators
 
 While the other person types, the chat header shows "typing…" and three dots bounce at the bottom
-of the chat. Nothing is stored: each chat has a private Realtime broadcast channel,
+of the chat, and in the chat list "typing…" takes the place of that chat's last message (for the 40
+most recent chats; Realtime limits how many channels one connection joins). Nothing is stored: each chat has a private Realtime broadcast channel,
 `typing:<conversation_id>`, and Realtime Authorization policies on `realtime.messages` let only that
 chat's two members join it. The indicator refreshes every 2.5 s while typing, stops after 4 s idle,
 on send, or on leaving the app, and fades by itself after 6 s if the other phone goes quiet.

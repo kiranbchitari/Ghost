@@ -17,9 +17,11 @@ import { showError } from '@/components/dialog';
 import { startConversation } from '@/features/messaging/api';
 import { maskText } from '@/features/messaging/mask';
 import { useConversations } from '@/features/messaging/use-conversations';
+import { useTypingChats } from '@/features/messaging/use-typing';
 import { HeroAvatar } from '@/features/profile/hero-avatar';
 import { heroFor } from '@/features/profile/heroes';
 import { useMyProfile } from '@/features/profile/use-my-profile';
+import { useSession } from '@/hooks/use-session';
 import { useAppTheme, useThemedStyles } from '@/theme/theme-provider';
 import type { AppTheme } from '@/theme/themes';
 
@@ -28,6 +30,11 @@ export default function ChatsScreen() {
   const styles = useThemedStyles(createStyles);
   const { code: myCode, hero: myHero, error: codeError } = useMyProfile();
   const { conversations, error, isRefreshing, refresh } = useConversations();
+  const { session } = useSession();
+  const typingIn = useTypingChats(
+    conversations.map((c) => c.conversation_id),
+    session?.user.id,
+  );
   const [friendCode, setFriendCode] = useState('');
   const [isStarting, setIsStarting] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
@@ -160,7 +167,12 @@ export default function ChatsScreen() {
                 </Text>
               </View>
               <View style={styles.rowBottom}>
-                {item.draft ? (
+                {typingIn.has(item.conversation_id) ? (
+                  // Like WhatsApp, "typing…" takes the preview's place while they type.
+                  <Text style={[styles.rowPreview, styles.rowTyping]} numberOfLines={1}>
+                    typing…
+                  </Text>
+                ) : item.draft ? (
                   // Your unsent draft takes the preview's place, like WhatsApp.
                   <Text style={styles.rowPreview} numberOfLines={1}>
                     <Text style={styles.rowDraft}>Draft: </Text>
@@ -237,6 +249,7 @@ const createStyles = ({ colors, glow, chat }: AppTheme) =>
     rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
     rowPreview: { flex: 1, color: colors.textMuted, ...(chat && { fontSize: 14.5 }) },
     rowDraft: { color: colors.accent, fontWeight: '600' },
+    rowTyping: { color: colors.accent, fontWeight: '500' },
     badge: {
       minWidth: 22,
       height: 22,
